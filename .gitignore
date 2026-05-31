@@ -1,0 +1,18 @@
+# SQLite
+*.db
+*.db-shm
+*.db-wal
+
+# Go build artifacts
+backend/connections.db*
+
+# Node
+frontend/node_modules/
+frontend/dist/
+
+# Env
+.env
+.env.local
+
+# Claude Code
+.claude/
