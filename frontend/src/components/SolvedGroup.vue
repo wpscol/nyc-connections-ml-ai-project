@@ -8,6 +8,7 @@ const color = DIFFICULTY_COLORS[props.group.difficulty] ?? DIFFICULTY_COLORS[0]
 
 <template>
   <div
+    data-testid="solved-group"
     :class="[
       'w-full rounded-md flex flex-col items-center justify-center py-3 px-2 pop-in',
       color.bg, color.text,

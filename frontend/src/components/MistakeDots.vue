@@ -9,6 +9,8 @@ defineProps<{ remaining: number; max: number }>()
       <span
         v-for="i in max"
         :key="i"
+        data-testid="mistake-dot"
+        :data-filled="i <= remaining ? 'true' : 'false'"
         :class="[
           'w-3.5 h-3.5 rounded-full inline-block transition-all duration-300',
           i <= remaining ? 'bg-[#5a594e]' : 'bg-[#d0d0c7]',

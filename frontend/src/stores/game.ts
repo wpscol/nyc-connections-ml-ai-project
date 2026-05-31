@@ -12,8 +12,12 @@ export const useGameStore = defineStore('game', () => {
   const maxMistakes = ref(4)
   const status = ref<'idle' | 'playing' | 'won' | 'lost'>('idle')
   const shakingTiles = ref<string[]>([])
+  const guessingTiles = ref<string[]>([]) // tiles AI is currently "showing" before result
   const toast = ref<string>('')
   const submitting = ref(false)
+
+  // Tracks how many in-flight local REST guesses we should skip from WS echo
+  let skipNextWSGuess = 0
 
   const canSubmit = computed(() => selected.value.length === 4 && !submitting.value && status.value === 'playing')
 
@@ -33,6 +37,7 @@ export const useGameStore = defineStore('game', () => {
     maxMistakes.value = data.max_mistakes
     status.value = data.status === 'playing' ? 'playing' : data.status
     selected.value = []
+    guessingTiles.value = []
   }
 
   function toggleTile(word: string) {
@@ -61,6 +66,8 @@ export const useGameStore = defineStore('game', () => {
   async function submitGuess() {
     if (!canSubmit.value) return
     submitting.value = true
+    // Tell WS handler to absorb our own echo for this guess
+    skipNextWSGuess++
     try {
       const res = await fetch(`/api/session/${sessionId.value}/guess`, {
         method: 'POST',
@@ -69,24 +76,33 @@ export const useGameStore = defineStore('game', () => {
       })
       if (!res.ok) throw new Error('Request failed')
       const result: GuessResult = await res.json()
-      applyGuessResult(result)
+      applyGuessResult(result, false)
+    } catch {
+      skipNextWSGuess = Math.max(0, skipNextWSGuess - 1)
     } finally {
       submitting.value = false
     }
   }
 
-  function applyGuessResult(result: GuessResult) {
+  // showAnimation = true when called from WS (AI/external guess), false for local user guess
+  function applyGuessResult(result: GuessResult, showAnimation: boolean) {
+    guessingTiles.value = []
     selected.value = []
     mistakesLeft.value = result.mistakes_left
     status.value = result.status === 'playing' ? 'playing' : result.status
 
     if (result.correct && result.category) {
-      solved.value.push(result.category)
+      if (!solved.value.some(s => s.title === result.category!.title)) {
+        solved.value.push(result.category)
+      }
       remaining.value = remaining.value.filter(w => !result.category!.words.includes(w))
       showToast('')
     } else {
       if (result.one_away) showToast('One away!')
-      triggerShake(selected.value.length ? selected.value : remaining.value.slice(0, 4))
+      const toShake = showAnimation && result.guessed?.length
+        ? result.guessed
+        : remaining.value.slice(0, 4)
+      triggerShake(toShake)
     }
   }
 
@@ -100,12 +116,27 @@ export const useGameStore = defineStore('game', () => {
     if (msg) setTimeout(() => { toast.value = '' }, 2000)
   }
 
-  // Called by WebSocket composable when MCP drives updates
+  // Called by WebSocket composable when MCP or external API drives updates
   function handleWSEvent(type: string, payload: unknown) {
     if (type === 'guess_result') {
-      applyGuessResult(payload as GuessResult)
+      // Absorb echo of our own REST guess
+      if (skipNextWSGuess > 0) {
+        skipNextWSGuess--
+        return
+      }
+      const result = payload as GuessResult
+      const words = result.guessed ?? []
+      if (words.length === 4) {
+        // Briefly show which tiles the AI is guessing, then apply the result
+        guessingTiles.value = words
+        setTimeout(() => applyGuessResult(result, true), 700)
+      } else {
+        applyGuessResult(result, true)
+      }
+    } else if (type === 'game_complete') {
+      const p = payload as { won: boolean }
+      status.value = p.won ? 'won' : 'lost'
     } else if (type === 'state_sync') {
-      // re-fetch full state
       if (sessionId.value) {
         fetch(`/api/session/${sessionId.value}`)
           .then(r => r.json())
@@ -116,7 +147,7 @@ export const useGameStore = defineStore('game', () => {
 
   return {
     sessionId, puzzleDate, remaining, solved, selected,
-    mistakesLeft, maxMistakes, status, shakingTiles, toast,
+    mistakesLeft, maxMistakes, status, shakingTiles, guessingTiles, toast,
     submitting, canSubmit,
     init, toggleTile, deselectAll, shuffle, submitGuess,
     applyGuessResult, handleWSEvent, showToast,

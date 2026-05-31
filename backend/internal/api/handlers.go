@@ -29,6 +29,7 @@ func (s *Server) Router() http.Handler {
 	r.Use(corsMiddleware)
 
 	r.Get("/api/puzzle/current", s.currentPuzzle)
+	r.Get("/api/sessions", s.listSessions)
 	r.Post("/api/session", s.createSession)
 	r.Get("/api/session/{id}", s.getSession)
 	r.Post("/api/session/{id}/guess", s.submitGuess)
@@ -49,6 +50,39 @@ func corsMiddleware(next http.Handler) http.Handler {
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+func (s *Server) listSessions(w http.ResponseWriter, r *http.Request) {
+	rows, err := s.db.Query(`SELECT id, state FROM sessions ORDER BY created_at DESC LIMIT 20`)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	defer rows.Close()
+
+	// Build a set of session IDs that currently have an open browser WS connection
+	active := make(map[string]bool)
+	for _, id := range s.hub.ActiveSessions() {
+		active[id] = true
+	}
+
+	type info struct {
+		ID       string `json:"session_id"`
+		Status   string `json:"status"`
+		WSActive bool   `json:"ws_active"`
+	}
+	var out []info
+	for rows.Next() {
+		var id, stateJSON string
+		rows.Scan(&id, &stateJSON)
+		var st game.GameState
+		json.Unmarshal([]byte(stateJSON), &st)
+		out = append(out, info{ID: id, Status: st.Status, WSActive: active[id]})
+	}
+	if out == nil {
+		out = []info{}
+	}
+	jsonOK(w, out)
 }
 
 func (s *Server) currentPuzzle(w http.ResponseWriter, r *http.Request) {
@@ -173,6 +207,7 @@ func (s *Server) processGuess(sessionID string, words []string) (*game.GuessResu
 		OneAway:      oneAway,
 		MistakesLeft: state.MistakesLeft,
 		Status:       state.Status,
+		Guessed:      words,
 	}
 	if correct {
 		sg := &game.SolvedGroup{
@@ -249,6 +284,11 @@ func (s *Server) advancePuzzle() {
 // ProcessGuess is exported for use by MCP server.
 func (s *Server) ProcessGuess(sessionID string, words []string) (*game.GuessResult, error) {
 	return s.processGuess(sessionID, words)
+}
+
+// GetSession is exported for use by MCP server.
+func (s *Server) GetSession(sessionID string) (*game.GameState, error) {
+	return game.GetSession(s.db, sessionID)
 }
 
 func (s *Server) LoadCurrentPuzzle() (*game.Puzzle, error) {

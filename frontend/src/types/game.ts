@@ -16,6 +16,7 @@ export interface GuessResult {
   one_away: boolean
   mistakes_left: number
   status: 'playing' | 'won' | 'lost'
+  guessed?: string[]
 }
 
 export interface SessionState {

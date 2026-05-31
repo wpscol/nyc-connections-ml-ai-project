@@ -38,6 +38,7 @@ type GuessResult struct {
 	OneAway      bool         `json:"one_away"`
 	MistakesLeft int          `json:"mistakes_left"`
 	Status       string       `json:"status"`
+	Guessed      []string     `json:"guessed,omitempty"` // submitted words, for WS animation
 }
 
 // WSEvent is broadcast over WebSocket to all session clients.

@@ -31,6 +31,7 @@ const store = useGameStore()
         :key="word"
         :word="word"
         :selected="store.selected.includes(word)"
+        :guessing="store.guessingTiles.includes(word)"
         :shaking="store.shakingTiles.includes(word)"
         :disabled="
           store.status !== 'playing' ||
@@ -43,12 +44,14 @@ const store = useGameStore()
     <!-- End state message -->
     <div
       v-if="store.status === 'won'"
+      data-testid="game-status-won"
       class="mt-4 text-center text-2xl font-bold text-green-600 pop-in"
     >
       Solved! 🎉
     </div>
     <div
       v-else-if="store.status === 'lost'"
+      data-testid="game-status-lost"
       class="mt-4 text-center text-2xl font-bold text-red-500 pop-in"
     >
       Better luck next time!
@@ -71,6 +74,7 @@ const store = useGameStore()
     <Transition name="fade">
       <div
         v-if="store.toast"
+        data-testid="toast"
         class="fixed top-6 left-1/2 -translate-x-1/2 bg-black text-white px-4 py-2 rounded-full text-sm font-semibold shadow-lg"
       >
         {{ store.toast }}

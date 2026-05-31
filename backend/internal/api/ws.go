@@ -48,6 +48,19 @@ func (h *Hub) unregister(c *client) {
 	}
 }
 
+// ActiveSessions returns session IDs that currently have at least one WS client.
+func (h *Hub) ActiveSessions() []string {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	ids := make([]string, 0, len(h.clients))
+	for id, set := range h.clients {
+		if len(set) > 0 {
+			ids = append(ids, id)
+		}
+	}
+	return ids
+}
+
 func (h *Hub) Broadcast(sessionID string, event interface{}) {
 	data, err := json.Marshal(event)
 	if err != nil {
