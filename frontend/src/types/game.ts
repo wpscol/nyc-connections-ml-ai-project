@@ -4,6 +4,13 @@ export interface PuzzleInfo {
   words: string[]
 }
 
+export interface SessionInfo {
+  session_id: string
+  status: 'playing' | 'won' | 'lost'
+  puzzle_date: string
+  ws_active: boolean
+}
+
 export interface SolvedGroup {
   title: string
   words: string[]

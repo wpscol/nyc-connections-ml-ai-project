@@ -31,8 +31,10 @@ func (s *Server) Router() http.Handler {
 
 	r.Get("/api/puzzle/current", s.currentPuzzle)
 	r.Get("/api/sessions", s.listSessions)
+	r.Delete("/api/sessions", s.deleteAllSessions)
 	r.Post("/api/session", s.createSession)
 	r.Get("/api/session/{id}", s.getSession)
+	r.Delete("/api/session/{id}", s.deleteSession)
 	r.Post("/api/session/{id}/guess", s.submitGuess)
 	r.Post("/api/session/{id}/restart", s.restartSession)
 	r.Post("/api/session/{id}/next", s.nextSession)
@@ -58,14 +60,19 @@ func corsMiddleware(next http.Handler) http.Handler {
 
 // SessionInfo is returned by ListSessions and the /api/sessions endpoint.
 type SessionInfo struct {
-	ID       string `json:"session_id"`
-	Status   string `json:"status"`
-	WSActive bool   `json:"ws_active"`
+	ID         string `json:"session_id"`
+	Status     string `json:"status"`
+	PuzzleDate string `json:"puzzle_date"`
+	WSActive   bool   `json:"ws_active"`
 }
 
 // ListSessions returns up to 20 recent sessions with ws_active flag.
 func (s *Server) ListSessions() ([]SessionInfo, error) {
-	rows, err := s.db.Query(`SELECT id, state FROM sessions ORDER BY created_at DESC LIMIT 20`)
+	rows, err := s.db.Query(`
+		SELECT s.id, s.state, COALESCE(p.date, '')
+		FROM sessions s
+		LEFT JOIN puzzles p ON s.puzzle_id = p.id
+		ORDER BY s.created_at DESC LIMIT 20`)
 	if err != nil {
 		return nil, err
 	}
@@ -78,11 +85,11 @@ func (s *Server) ListSessions() ([]SessionInfo, error) {
 
 	var out []SessionInfo
 	for rows.Next() {
-		var id, stateJSON string
-		rows.Scan(&id, &stateJSON)
+		var id, stateJSON, puzzleDate string
+		rows.Scan(&id, &stateJSON, &puzzleDate)
 		var st game.GameState
 		json.Unmarshal([]byte(stateJSON), &st)
-		out = append(out, SessionInfo{ID: id, Status: st.Status, WSActive: active[id]})
+		out = append(out, SessionInfo{ID: id, Status: st.Status, PuzzleDate: puzzleDate, WSActive: active[id]})
 	}
 	if out == nil {
 		out = []SessionInfo{}
@@ -269,6 +276,24 @@ func (s *Server) prevSession(w http.ResponseWriter, r *http.Request) {
 	resp := stateResponseWithDate(id, newState, puzzle.Date)
 	s.hub.Broadcast(id, game.WSEvent{Type: "session_reset", Payload: resp})
 	jsonOK(w, resp)
+}
+
+func (s *Server) deleteSession(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	_, err := s.db.Exec(`DELETE FROM sessions WHERE id=?`, id)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) deleteAllSessions(w http.ResponseWriter, r *http.Request) {
+	if _, err := s.db.Exec(`DELETE FROM sessions`); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (s *Server) setMaxMistakes(w http.ResponseWriter, r *http.Request) {

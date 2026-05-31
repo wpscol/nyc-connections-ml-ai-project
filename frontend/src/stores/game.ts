@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
-import type { SolvedGroup, GuessResult, SessionState, GuessAttempt, GameStats } from '../types/game'
+import type { SolvedGroup, GuessResult, SessionState, GuessAttempt, GameStats, SessionInfo } from '../types/game'
 
 export const useGameStore = defineStore('game', () => {
   const sessionId = ref<string>('')
@@ -18,6 +18,7 @@ export const useGameStore = defineStore('game', () => {
   const showStats = ref(false)
   const toast = ref<string>('')
   const submitting = ref(false)
+  const sessions = ref<SessionInfo[]>([])
 
   // Tracks how many in-flight local REST guesses we should skip from WS echo
   let skipNextWSGuess = 0
@@ -30,6 +31,45 @@ export const useGameStore = defineStore('game', () => {
     if (!res.ok) throw new Error('Failed to create session')
     const data: SessionState = await res.json()
     applySessionState(data)
+    await loadSessions()
+  }
+
+  async function newGame() {
+    const res = await fetch('/api/session', { method: 'POST' })
+    if (!res.ok) return
+    applySessionState(await res.json())
+    await loadSessions()
+  }
+
+  async function deleteSession(id: string) {
+    await fetch(`/api/session/${id}`, { method: 'DELETE' })
+    // If we just deleted the active session, start a new one
+    if (id === sessionId.value) {
+      const res = await fetch('/api/session', { method: 'POST' })
+      if (res.ok) applySessionState(await res.json())
+    }
+    await loadSessions()
+  }
+
+  async function clearAllSessions() {
+    await fetch('/api/sessions', { method: 'DELETE' })
+    const res = await fetch('/api/session', { method: 'POST' })
+    if (res.ok) applySessionState(await res.json())
+    await loadSessions()
+  }
+
+  async function loadSessions() {
+    try {
+      const res = await fetch('/api/sessions')
+      if (res.ok) sessions.value = await res.json()
+    } catch { /* ignore */ }
+  }
+
+  async function switchSession(id: string) {
+    const res = await fetch(`/api/session/${id}`)
+    if (!res.ok) return
+    applySessionState(await res.json())
+    await loadSessions()
   }
 
   function applySessionState(data: SessionState) {
@@ -94,19 +134,19 @@ export const useGameStore = defineStore('game', () => {
   async function restart() {
     if (!sessionId.value) return
     const res = await fetch(`/api/session/${sessionId.value}/restart`, { method: 'POST' })
-    if (res.ok) applySessionState(await res.json())
+    if (res.ok) { applySessionState(await res.json()); loadSessions() }
   }
 
   async function next() {
     if (!sessionId.value) return
     const res = await fetch(`/api/session/${sessionId.value}/next`, { method: 'POST' })
-    if (res.ok) applySessionState(await res.json())
+    if (res.ok) { applySessionState(await res.json()); loadSessions() }
   }
 
   async function prev() {
     if (!sessionId.value) return
     const res = await fetch(`/api/session/${sessionId.value}/prev`, { method: 'POST' })
-    if (res.ok) applySessionState(await res.json())
+    if (res.ok) { applySessionState(await res.json()); loadSessions() }
   }
 
   function recordAttempt(result: GuessResult) {
@@ -192,8 +232,8 @@ export const useGameStore = defineStore('game', () => {
   return {
     sessionId, puzzleDate, remaining, solved, selected,
     mistakesLeft, maxMistakes, status, shakingTiles, guessingTiles,
-    attempts, stats, showStats, toast, submitting, canSubmit, finished,
-    init, toggleTile, deselectAll, shuffle, submitGuess, restart, next, prev,
-    applyGuessResult, handleWSEvent, showToast,
+    attempts, stats, showStats, toast, submitting, sessions, canSubmit, finished,
+    init, newGame, toggleTile, deselectAll, shuffle, submitGuess, restart, next, prev,
+    applyGuessResult, handleWSEvent, showToast, loadSessions, switchSession, deleteSession, clearAllSessions,
   }
 })
