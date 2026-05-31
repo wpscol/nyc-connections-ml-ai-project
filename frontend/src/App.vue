@@ -27,7 +27,14 @@ onMounted(async () => {
     <header class="border-b border-gray-200">
       <div class="max-w-xl mx-auto px-4 py-4 flex items-baseline gap-3">
         <h1 class="text-3xl font-black tracking-tight">Connections</h1>
-        <span class="text-gray-500 text-base">{{ store.puzzleDate }}</span>
+        <span data-testid="puzzle-date" class="text-gray-500 text-base">{{ store.puzzleDate }}</span>
+        <span
+          v-if="store.sessionId"
+          class="ml-auto text-xs text-gray-400 font-mono truncate max-w-[12rem]"
+          :title="store.sessionId"
+        >
+          session: {{ store.sessionId }}
+        </span>
       </div>
     </header>
 

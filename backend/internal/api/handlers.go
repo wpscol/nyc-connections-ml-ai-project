@@ -56,35 +56,57 @@ func corsMiddleware(next http.Handler) http.Handler {
 	})
 }
 
-func (s *Server) listSessions(w http.ResponseWriter, r *http.Request) {
+// SessionInfo is returned by ListSessions and the /api/sessions endpoint.
+type SessionInfo struct {
+	ID       string `json:"session_id"`
+	Status   string `json:"status"`
+	WSActive bool   `json:"ws_active"`
+}
+
+// ListSessions returns up to 20 recent sessions with ws_active flag.
+func (s *Server) ListSessions() ([]SessionInfo, error) {
 	rows, err := s.db.Query(`SELECT id, state FROM sessions ORDER BY created_at DESC LIMIT 20`)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
+		return nil, err
 	}
 	defer rows.Close()
 
-	// Build a set of session IDs that currently have an open browser WS connection
 	active := make(map[string]bool)
 	for _, id := range s.hub.ActiveSessions() {
 		active[id] = true
 	}
 
-	type info struct {
-		ID       string `json:"session_id"`
-		Status   string `json:"status"`
-		WSActive bool   `json:"ws_active"`
-	}
-	var out []info
+	var out []SessionInfo
 	for rows.Next() {
 		var id, stateJSON string
 		rows.Scan(&id, &stateJSON)
 		var st game.GameState
 		json.Unmarshal([]byte(stateJSON), &st)
-		out = append(out, info{ID: id, Status: st.Status, WSActive: active[id]})
+		out = append(out, SessionInfo{ID: id, Status: st.Status, WSActive: active[id]})
 	}
 	if out == nil {
-		out = []info{}
+		out = []SessionInfo{}
+	}
+	return out, nil
+}
+
+// SetMaxMistakes persists the new limit and notifies all active browser sessions.
+func (s *Server) SetMaxMistakes(count int) error {
+	if err := appdb.SetConfig(s.db, "max_mistakes", strconv.Itoa(count)); err != nil {
+		return err
+	}
+	s.hub.BroadcastAll(game.WSEvent{
+		Type:    "config_update",
+		Payload: map[string]int{"max_mistakes": count},
+	})
+	return nil
+}
+
+func (s *Server) listSessions(w http.ResponseWriter, r *http.Request) {
+	out, err := s.ListSessions()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
 	}
 	jsonOK(w, out)
 }
@@ -257,7 +279,7 @@ func (s *Server) setMaxMistakes(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "count must be 1-10", http.StatusBadRequest)
 		return
 	}
-	if err := appdb.SetConfig(s.db, "max_mistakes", strconv.Itoa(body.Count)); err != nil {
+	if err := s.SetMaxMistakes(body.Count); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -362,6 +384,20 @@ func (s *Server) loadMaxMistakes() int {
 		return 4
 	}
 	return n
+}
+
+// CreateSession creates a new session for the current puzzle and returns its ID and state.
+// Exported for the MCP server.
+func (s *Server) CreateSession() (string, *game.GameState, string, error) {
+	puzzle, err := s.loadCurrentPuzzle()
+	if err != nil {
+		return "", nil, "", err
+	}
+	id, state, err := game.CreateSession(s.db, *puzzle, s.loadMaxMistakes())
+	if err != nil {
+		return "", nil, "", err
+	}
+	return id, state, puzzle.Date, nil
 }
 
 // ProcessGuess is exported for use by MCP server.

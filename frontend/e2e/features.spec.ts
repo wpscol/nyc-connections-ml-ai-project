@@ -80,7 +80,7 @@ test('next advances to a different puzzle live via WebSocket', async ({ page }) 
   await page.goto('/')
   await expect(page.locator('[data-testid="tile"]')).toHaveCount(16, { timeout: 15_000 })
 
-  const dateLocator = page.locator('header span')
+  const dateLocator = page.locator('[data-testid="puzzle-date"]')
   const beforeDate = (await dateLocator.textContent())?.trim()
 
   await page.evaluate(async (sid: string) => {
@@ -99,7 +99,7 @@ test('previous navigates back to a different puzzle live via WebSocket', async (
   await page.goto('/')
   await expect(page.locator('[data-testid="tile"]')).toHaveCount(16, { timeout: 15_000 })
 
-  const dateLocator = page.locator('header span')
+  const dateLocator = page.locator('[data-testid="puzzle-date"]')
   const beforeDate = (await dateLocator.textContent())?.trim()
 
   await page.evaluate(async (sid: string) => {
@@ -117,7 +117,7 @@ test('prev then next returns to the original puzzle', async ({ page }) => {
   await page.goto('/')
   await expect(page.locator('[data-testid="tile"]')).toHaveCount(16, { timeout: 15_000 })
 
-  const dateLocator = page.locator('header span')
+  const dateLocator = page.locator('[data-testid="puzzle-date"]')
   const start = (await dateLocator.textContent())?.trim()
 
   await page.evaluate(async (sid: string) => {

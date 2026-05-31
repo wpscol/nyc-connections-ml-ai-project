@@ -59,6 +59,7 @@ export type WSEvent =
   | { type: 'game_complete'; payload: { won: boolean; stats?: GameStats } }
   | { type: 'session_reset'; payload: SessionState }
   | { type: 'state_sync'; payload: { session_id: string } }
+  | { type: 'config_update'; payload: { max_mistakes: number } }
 
 export const DIFFICULTY_COLORS: Record<number, { bg: string; text: string }> = {
   0: { bg: 'bg-yellow-300',  text: 'text-yellow-900' },

@@ -61,6 +61,24 @@ func (h *Hub) ActiveSessions() []string {
 	return ids
 }
 
+// BroadcastAll sends an event to every connected client across all sessions.
+func (h *Hub) BroadcastAll(event interface{}) {
+	data, err := json.Marshal(event)
+	if err != nil {
+		return
+	}
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	for _, clients := range h.clients {
+		for c := range clients {
+			select {
+			case c.send <- data:
+			default:
+			}
+		}
+	}
+}
+
 func (h *Hub) Broadcast(sessionID string, event interface{}) {
 	data, err := json.Marshal(event)
 	if err != nil {

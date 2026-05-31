@@ -1,2 +1,0 @@
-- [ ] Show current session on the frontend
-- [ ] Add endpoint + mcp to show active sessions (and which one is opened on the frontend)

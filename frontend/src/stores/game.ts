@@ -183,6 +183,9 @@ export const useGameStore = defineStore('game', () => {
           .then(r => r.json())
           .then((s: SessionState) => applySessionState(s))
       }
+    } else if (type === 'config_update') {
+      const p = payload as { max_mistakes: number }
+      maxMistakes.value = p.max_mistakes
     }
   }
 
