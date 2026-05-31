@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
-import type { SolvedGroup, GuessResult, SessionState } from '../types/game'
+import type { SolvedGroup, GuessResult, SessionState, GuessAttempt, GameStats } from '../types/game'
 
 export const useGameStore = defineStore('game', () => {
   const sessionId = ref<string>('')
@@ -12,7 +12,10 @@ export const useGameStore = defineStore('game', () => {
   const maxMistakes = ref(4)
   const status = ref<'idle' | 'playing' | 'won' | 'lost'>('idle')
   const shakingTiles = ref<string[]>([])
-  const guessingTiles = ref<string[]>([]) // tiles AI is currently "showing" before result
+  const guessingTiles = ref<string[]>([]) // tiles an external client is "showing" before result
+  const attempts = ref<GuessAttempt[]>([]) // live log of every try (player / AI / API)
+  const stats = ref<GameStats | null>(null)
+  const showStats = ref(false)
   const toast = ref<string>('')
   const submitting = ref(false)
 
@@ -20,6 +23,7 @@ export const useGameStore = defineStore('game', () => {
   let skipNextWSGuess = 0
 
   const canSubmit = computed(() => selected.value.length === 4 && !submitting.value && status.value === 'playing')
+  const finished = computed(() => status.value === 'won' || status.value === 'lost')
 
   async function init() {
     const res = await fetch('/api/session', { method: 'POST' })
@@ -38,6 +42,10 @@ export const useGameStore = defineStore('game', () => {
     status.value = data.status === 'playing' ? 'playing' : data.status
     selected.value = []
     guessingTiles.value = []
+    shakingTiles.value = []
+    attempts.value = data.guesses ?? []
+    stats.value = data.stats ?? null
+    showStats.value = false
   }
 
   function toggleTile(word: string) {
@@ -66,12 +74,11 @@ export const useGameStore = defineStore('game', () => {
   async function submitGuess() {
     if (!canSubmit.value) return
     submitting.value = true
-    // Tell WS handler to absorb our own echo for this guess
-    skipNextWSGuess++
+    skipNextWSGuess++ // absorb our own WS echo for this guess
     try {
       const res = await fetch(`/api/session/${sessionId.value}/guess`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', 'X-Source': 'player' },
         body: JSON.stringify({ words: selected.value }),
       })
       if (!res.ok) throw new Error('Request failed')
@@ -84,12 +91,42 @@ export const useGameStore = defineStore('game', () => {
     }
   }
 
-  // showAnimation = true when called from WS (AI/external guess), false for local user guess
-  function applyGuessResult(result: GuessResult, showAnimation: boolean) {
+  async function restart() {
+    if (!sessionId.value) return
+    const res = await fetch(`/api/session/${sessionId.value}/restart`, { method: 'POST' })
+    if (res.ok) applySessionState(await res.json())
+  }
+
+  async function next() {
+    if (!sessionId.value) return
+    const res = await fetch(`/api/session/${sessionId.value}/next`, { method: 'POST' })
+    if (res.ok) applySessionState(await res.json())
+  }
+
+  async function prev() {
+    if (!sessionId.value) return
+    const res = await fetch(`/api/session/${sessionId.value}/prev`, { method: 'POST' })
+    if (res.ok) applySessionState(await res.json())
+  }
+
+  function recordAttempt(result: GuessResult) {
+    attempts.value.push({
+      words: result.guessed ?? [],
+      correct: result.correct,
+      one_away: result.one_away,
+      difficulty: result.correct && result.category ? result.category.difficulty : -1,
+      source: result.source ?? 'api',
+      at: Date.now(),
+    })
+  }
+
+  // showAnimation = true when called from WS (external guess), false for local user guess
+  function applyGuessResult(result: GuessResult, showAnimation = false) {
     guessingTiles.value = []
     selected.value = []
     mistakesLeft.value = result.mistakes_left
     status.value = result.status === 'playing' ? 'playing' : result.status
+    recordAttempt(result)
 
     if (result.correct && result.category) {
       if (!solved.value.some(s => s.title === result.category!.title)) {
@@ -119,23 +156,27 @@ export const useGameStore = defineStore('game', () => {
   // Called by WebSocket composable when MCP or external API drives updates
   function handleWSEvent(type: string, payload: unknown) {
     if (type === 'guess_result') {
-      // Absorb echo of our own REST guess
-      if (skipNextWSGuess > 0) {
+      if (skipNextWSGuess > 0) { // absorb echo of our own REST guess
         skipNextWSGuess--
         return
       }
       const result = payload as GuessResult
       const words = result.guessed ?? []
-      if (words.length === 4) {
-        // Briefly show which tiles the AI is guessing, then apply the result
+      if (words.length === 4 && result.status !== undefined) {
+        // Briefly show which tiles the external client is guessing, then apply
         guessingTiles.value = words
         setTimeout(() => applyGuessResult(result, true), 700)
       } else {
         applyGuessResult(result, true)
       }
     } else if (type === 'game_complete') {
-      const p = payload as { won: boolean }
+      const p = payload as { won: boolean; stats?: GameStats }
       status.value = p.won ? 'won' : 'lost'
+      if (p.stats) stats.value = p.stats
+      // Let the final tile/group animation finish before revealing stats
+      setTimeout(() => { showStats.value = true }, 900)
+    } else if (type === 'session_reset') {
+      applySessionState(payload as SessionState)
     } else if (type === 'state_sync') {
       if (sessionId.value) {
         fetch(`/api/session/${sessionId.value}`)
@@ -147,9 +188,9 @@ export const useGameStore = defineStore('game', () => {
 
   return {
     sessionId, puzzleDate, remaining, solved, selected,
-    mistakesLeft, maxMistakes, status, shakingTiles, guessingTiles, toast,
-    submitting, canSubmit,
-    init, toggleTile, deselectAll, shuffle, submitGuess,
+    mistakesLeft, maxMistakes, status, shakingTiles, guessingTiles,
+    attempts, stats, showStats, toast, submitting, canSubmit, finished,
+    init, toggleTile, deselectAll, shuffle, submitGuess, restart, next, prev,
     applyGuessResult, handleWSEvent, showToast,
   }
 })

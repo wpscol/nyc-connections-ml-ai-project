@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
@@ -33,6 +34,9 @@ func (s *Server) Router() http.Handler {
 	r.Post("/api/session", s.createSession)
 	r.Get("/api/session/{id}", s.getSession)
 	r.Post("/api/session/{id}/guess", s.submitGuess)
+	r.Post("/api/session/{id}/restart", s.restartSession)
+	r.Post("/api/session/{id}/next", s.nextSession)
+	r.Post("/api/session/{id}/prev", s.prevSession)
 	r.Put("/api/config/max_mistakes", s.setMaxMistakes)
 	r.Get("/ws", s.hub.ServeWS)
 
@@ -112,16 +116,7 @@ func (s *Server) createSession(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	jsonOK(w, map[string]interface{}{
-		"session_id":    id,
-		"puzzle_id":     state.PuzzleID,
-		"date":          puzzle.Date,
-		"remaining":     state.RemainingWords,
-		"solved":        state.Solved,
-		"mistakes_left": state.MistakesLeft,
-		"max_mistakes":  state.MaxMistakes,
-		"status":        state.Status,
-	})
+	jsonOK(w, stateResponseWithDate(id, state, puzzle.Date))
 }
 
 func (s *Server) getSession(w http.ResponseWriter, r *http.Request) {
@@ -131,7 +126,11 @@ func (s *Server) getSession(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusNotFound)
 		return
 	}
-	jsonOK(w, stateResponse(id, state))
+	date := ""
+	if puzzle, perr := s.loadPuzzleByID(state.PuzzleID); perr == nil {
+		date = puzzle.Date
+	}
+	jsonOK(w, stateResponseWithDate(id, state, date))
 }
 
 func (s *Server) submitGuess(w http.ResponseWriter, r *http.Request) {
@@ -144,29 +143,110 @@ func (s *Server) submitGuess(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	result, err := s.processGuess(id, body.Words)
+	source := r.Header.Get("X-Source")
+	if source == "" {
+		source = "api"
+	}
+
+	result, err := s.processGuess(id, body.Words, source)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 
 	s.hub.Broadcast(id, game.WSEvent{Type: "guess_result", Payload: result})
-
-	state, _ := game.GetSession(s.db, id)
-	if state != nil && (state.Status == "won" || state.Status == "lost") {
-		s.hub.Broadcast(id, game.WSEvent{
-			Type: "game_complete",
-			Payload: map[string]interface{}{
-				"won":    state.Status == "won",
-				"solved": state.Solved,
-			},
-		})
-		if state.Status == "won" {
-			s.advancePuzzle()
-		}
-	}
+	s.broadcastIfComplete(id)
 
 	jsonOK(w, result)
+}
+
+// broadcastIfComplete sends a game_complete event with stats when a game ends.
+func (s *Server) broadcastIfComplete(id string) {
+	state, _ := game.GetSession(s.db, id)
+	if state == nil || (state.Status != "won" && state.Status != "lost") {
+		return
+	}
+	s.hub.Broadcast(id, game.WSEvent{
+		Type: "game_complete",
+		Payload: map[string]interface{}{
+			"won":    state.Status == "won",
+			"solved": state.Solved,
+			"stats":  game.ComputeStats(state),
+		},
+	})
+}
+
+func (s *Server) restartSession(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	state, err := game.GetSession(s.db, id)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+	puzzle, err := s.loadPuzzleByID(state.PuzzleID)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	newState, err := game.ResetSession(s.db, id, *puzzle, s.loadMaxMistakes())
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	resp := stateResponseWithDate(id, newState, puzzle.Date)
+	s.hub.Broadcast(id, game.WSEvent{Type: "session_reset", Payload: resp})
+	jsonOK(w, resp)
+}
+
+func (s *Server) nextSession(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	state, err := game.GetSession(s.db, id)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+	nextID := s.nextPuzzleID(state.PuzzleID)
+	puzzle, err := s.loadPuzzleByID(nextID)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	newState, err := game.ResetSession(s.db, id, *puzzle, s.loadMaxMistakes())
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	// Advance the global pointer so brand-new sessions follow along
+	appdb.SetConfig(s.db, "current_puzzle_id", strconv.FormatInt(nextID, 10))
+
+	resp := stateResponseWithDate(id, newState, puzzle.Date)
+	s.hub.Broadcast(id, game.WSEvent{Type: "session_reset", Payload: resp})
+	jsonOK(w, resp)
+}
+
+func (s *Server) prevSession(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	state, err := game.GetSession(s.db, id)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+	prevID := s.prevPuzzleID(state.PuzzleID)
+	puzzle, err := s.loadPuzzleByID(prevID)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	newState, err := game.ResetSession(s.db, id, *puzzle, s.loadMaxMistakes())
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	appdb.SetConfig(s.db, "current_puzzle_id", strconv.FormatInt(prevID, 10))
+
+	resp := stateResponseWithDate(id, newState, puzzle.Date)
+	s.hub.Broadcast(id, game.WSEvent{Type: "session_reset", Payload: resp})
+	jsonOK(w, resp)
 }
 
 func (s *Server) setMaxMistakes(w http.ResponseWriter, r *http.Request) {
@@ -185,7 +265,7 @@ func (s *Server) setMaxMistakes(w http.ResponseWriter, r *http.Request) {
 }
 
 // processGuess is shared between REST handler and MCP tool.
-func (s *Server) processGuess(sessionID string, words []string) (*game.GuessResult, error) {
+func (s *Server) processGuess(sessionID string, words []string, source string) (*game.GuessResult, error) {
 	state, err := game.GetSession(s.db, sessionID)
 	if err != nil {
 		return nil, err
@@ -208,7 +288,9 @@ func (s *Server) processGuess(sessionID string, words []string) (*game.GuessResu
 		MistakesLeft: state.MistakesLeft,
 		Status:       state.Status,
 		Guessed:      words,
+		Source:       source,
 	}
+	difficulty := -1
 	if correct {
 		sg := &game.SolvedGroup{
 			Title:      cat.Title,
@@ -218,11 +300,22 @@ func (s *Server) processGuess(sessionID string, words []string) (*game.GuessResu
 			sg.Words = append(sg.Words, c.Content)
 		}
 		result.Category = sg
+		difficulty = cat.Difficulty
 	}
 
 	game.ApplyGuess(state, result, cat)
 	result.MistakesLeft = state.MistakesLeft
 	result.Status = state.Status
+
+	// Record the attempt for the live log
+	state.Guesses = append(state.Guesses, game.GuessAttempt{
+		Words:      words,
+		Correct:    correct,
+		OneAway:    oneAway,
+		Difficulty: difficulty,
+		Source:     source,
+		At:         time.Now().UnixMilli(),
+	})
 
 	if err := game.SaveSession(s.db, sessionID, state); err != nil {
 		return nil, err
@@ -271,24 +364,109 @@ func (s *Server) loadMaxMistakes() int {
 	return n
 }
 
-func (s *Server) advancePuzzle() {
-	idStr, _ := appdb.GetConfig(s.db, "current_puzzle_id")
-	id, _ := strconv.ParseInt(idStr, 10, 64)
-	var nextID int64
-	s.db.QueryRow(`SELECT id FROM puzzles WHERE id > ? ORDER BY id ASC LIMIT 1`, id).Scan(&nextID)
-	if nextID > 0 {
-		appdb.SetConfig(s.db, "current_puzzle_id", strconv.FormatInt(nextID, 10))
-	}
-}
-
 // ProcessGuess is exported for use by MCP server.
-func (s *Server) ProcessGuess(sessionID string, words []string) (*game.GuessResult, error) {
-	return s.processGuess(sessionID, words)
+func (s *Server) ProcessGuess(sessionID string, words []string, source string) (*game.GuessResult, error) {
+	return s.processGuess(sessionID, words, source)
 }
 
 // GetSession is exported for use by MCP server.
 func (s *Server) GetSession(sessionID string) (*game.GameState, error) {
 	return game.GetSession(s.db, sessionID)
+}
+
+// BroadcastIfComplete is exported for use by MCP server.
+func (s *Server) BroadcastIfComplete(sessionID string) {
+	s.broadcastIfComplete(sessionID)
+}
+
+// RestartSession resets the session to its current puzzle and broadcasts.
+// Exported for the MCP server.
+func (s *Server) RestartSession(sessionID string) (*game.GameState, error) {
+	state, err := game.GetSession(s.db, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	puzzle, err := s.loadPuzzleByID(state.PuzzleID)
+	if err != nil {
+		return nil, err
+	}
+	newState, err := game.ResetSession(s.db, sessionID, *puzzle, s.loadMaxMistakes())
+	if err != nil {
+		return nil, err
+	}
+	s.hub.Broadcast(sessionID, game.WSEvent{
+		Type:    "session_reset",
+		Payload: stateResponseWithDate(sessionID, newState, puzzle.Date),
+	})
+	return newState, nil
+}
+
+// NextSession advances the session to the next puzzle and broadcasts.
+// Exported for the MCP server.
+func (s *Server) NextSession(sessionID string) (*game.GameState, error) {
+	state, err := game.GetSession(s.db, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	nextID := s.nextPuzzleID(state.PuzzleID)
+	puzzle, err := s.loadPuzzleByID(nextID)
+	if err != nil {
+		return nil, err
+	}
+	newState, err := game.ResetSession(s.db, sessionID, *puzzle, s.loadMaxMistakes())
+	if err != nil {
+		return nil, err
+	}
+	appdb.SetConfig(s.db, "current_puzzle_id", strconv.FormatInt(nextID, 10))
+	s.hub.Broadcast(sessionID, game.WSEvent{
+		Type:    "session_reset",
+		Payload: stateResponseWithDate(sessionID, newState, puzzle.Date),
+	})
+	return newState, nil
+}
+
+// PrevSession rewinds the session to the previous puzzle and broadcasts.
+// Exported for the MCP server.
+func (s *Server) PrevSession(sessionID string) (*game.GameState, error) {
+	state, err := game.GetSession(s.db, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	prevID := s.prevPuzzleID(state.PuzzleID)
+	puzzle, err := s.loadPuzzleByID(prevID)
+	if err != nil {
+		return nil, err
+	}
+	newState, err := game.ResetSession(s.db, sessionID, *puzzle, s.loadMaxMistakes())
+	if err != nil {
+		return nil, err
+	}
+	appdb.SetConfig(s.db, "current_puzzle_id", strconv.FormatInt(prevID, 10))
+	s.hub.Broadcast(sessionID, game.WSEvent{
+		Type:    "session_reset",
+		Payload: stateResponseWithDate(sessionID, newState, puzzle.Date),
+	})
+	return newState, nil
+}
+
+// nextPuzzleID returns the next puzzle id after current, wrapping to the first.
+func (s *Server) nextPuzzleID(current int64) int64 {
+	var nextID int64
+	err := s.db.QueryRow(`SELECT id FROM puzzles WHERE id > ? ORDER BY id ASC LIMIT 1`, current).Scan(&nextID)
+	if err == sql.ErrNoRows || nextID == 0 {
+		s.db.QueryRow(`SELECT id FROM puzzles ORDER BY id ASC LIMIT 1`).Scan(&nextID)
+	}
+	return nextID
+}
+
+// prevPuzzleID returns the previous puzzle id before current, wrapping to the last.
+func (s *Server) prevPuzzleID(current int64) int64 {
+	var prevID int64
+	err := s.db.QueryRow(`SELECT id FROM puzzles WHERE id < ? ORDER BY id DESC LIMIT 1`, current).Scan(&prevID)
+	if err == sql.ErrNoRows || prevID == 0 {
+		s.db.QueryRow(`SELECT id FROM puzzles ORDER BY id DESC LIMIT 1`).Scan(&prevID)
+	}
+	return prevID
 }
 
 func (s *Server) LoadCurrentPuzzle() (*game.Puzzle, error) {
@@ -299,12 +477,12 @@ func (s *Server) LoadMaxMistakes() int {
 	return s.loadMaxMistakes()
 }
 
-func (s *Server) AdvancePuzzle() {
-	s.advancePuzzle()
+func stateResponse(id string, state *game.GameState) map[string]interface{} {
+	return stateResponseWithDate(id, state, "")
 }
 
-func stateResponse(id string, state *game.GameState) map[string]interface{} {
-	return map[string]interface{}{
+func stateResponseWithDate(id string, state *game.GameState, date string) map[string]interface{} {
+	resp := map[string]interface{}{
 		"session_id":    id,
 		"puzzle_id":     state.PuzzleID,
 		"remaining":     state.RemainingWords,
@@ -312,7 +490,13 @@ func stateResponse(id string, state *game.GameState) map[string]interface{} {
 		"mistakes_left": state.MistakesLeft,
 		"max_mistakes":  state.MaxMistakes,
 		"status":        state.Status,
+		"guesses":       state.Guesses,
+		"stats":         game.ComputeStats(state),
 	}
+	if date != "" {
+		resp["date"] = date
+	}
+	return resp
 }
 
 func jsonOK(w http.ResponseWriter, v interface{}) {

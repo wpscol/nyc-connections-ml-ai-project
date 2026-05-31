@@ -147,3 +147,87 @@ describe('applyGuessResult', () => {
     expect(store.status).toBe('won')
   })
 })
+
+describe('attempts log', () => {
+  it('records each guess with its source and difficulty', () => {
+    const store = useGameStore()
+    store.status = 'playing' as const
+    store.remaining.push('A', 'B', 'C', 'D', 'E', 'F', 'G', 'H')
+
+    store.applyGuessResult({
+      correct: true,
+      category: { title: 'YELLOW', words: ['A', 'B', 'C', 'D'], difficulty: 0 },
+      one_away: false,
+      mistakes_left: 4,
+      status: 'playing',
+      guessed: ['A', 'B', 'C', 'D'],
+      source: 'mcp',
+    })
+    store.applyGuessResult({
+      correct: false,
+      one_away: true,
+      mistakes_left: 3,
+      status: 'playing',
+      guessed: ['E', 'F', 'G', 'H'],
+      source: 'player',
+    })
+
+    expect(store.attempts).toHaveLength(2)
+    expect(store.attempts[0]).toMatchObject({ correct: true, difficulty: 0, source: 'mcp' })
+    expect(store.attempts[1]).toMatchObject({ correct: false, one_away: true, difficulty: -1, source: 'player' })
+  })
+
+  it('defaults source to api when omitted', () => {
+    const store = useGameStore()
+    store.status = 'playing' as const
+    store.applyGuessResult({
+      correct: false, one_away: false, mistakes_left: 3, status: 'playing', guessed: ['A', 'B', 'C', 'D'],
+    })
+    expect(store.attempts[0].source).toBe('api')
+  })
+})
+
+describe('handleWSEvent', () => {
+  it('game_complete sets status and stats', () => {
+    const store = useGameStore()
+    store.status = 'playing' as const
+    store.handleWSEvent('game_complete', {
+      won: true,
+      stats: {
+        total_guesses: 4, correct_guesses: 4, groups_solved: 4,
+        mistakes: 0, max_mistakes: 4, won: true, accuracy: 100,
+      },
+    })
+    expect(store.status).toBe('won')
+    expect(store.stats?.accuracy).toBe(100)
+    expect(store.stats?.groups_solved).toBe(4)
+  })
+
+  it('session_reset replaces board and clears attempts/stats', () => {
+    const store = useGameStore()
+    // dirty state
+    store.solved.push({ title: 'X', words: ['A'], difficulty: 0 })
+    store.attempts.push({ words: ['A', 'B', 'C', 'D'], correct: false, one_away: false, difficulty: -1, source: 'api', at: 0 })
+    store.stats = { total_guesses: 1, correct_guesses: 0, groups_solved: 1, mistakes: 1, max_mistakes: 4, won: false, accuracy: 0 }
+    store.showStats = true
+
+    store.handleWSEvent('session_reset', {
+      session_id: 'test-session',
+      puzzle_id: 5,
+      date: 'June 16, 2023',
+      remaining: ['Q', 'R', 'S', 'T', 'U', 'V', 'W', 'X', 'Y', 'Z', 'A', 'B', 'C', 'D', 'E', 'F'],
+      solved: [],
+      mistakes_left: 4,
+      max_mistakes: 4,
+      status: 'playing',
+      guesses: [],
+    })
+
+    expect(store.remaining).toHaveLength(16)
+    expect(store.solved).toHaveLength(0)
+    expect(store.attempts).toHaveLength(0)
+    expect(store.showStats).toBe(false)
+    expect(store.puzzleDate).toBe('June 16, 2023')
+    expect(store.status).toBe('playing')
+  })
+})

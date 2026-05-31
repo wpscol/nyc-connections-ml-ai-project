@@ -18,6 +18,7 @@ func CreateSession(db *sql.DB, puzzle Puzzle, maxMistakes int) (string, *GameSta
 		Solved:         []SolvedGroup{},
 		RemainingWords: AllWords(puzzle),
 		Status:         "playing",
+		Guesses:        []GuessAttempt{},
 	}
 	data, err := json.Marshal(state)
 	if err != nil {
@@ -60,6 +61,32 @@ func SaveSession(db *sql.DB, id string, state *GameState) error {
 		string(data), time.Now().Unix(), id,
 	)
 	return err
+}
+
+// ResetSession resets an existing session row to a fresh game on the given puzzle.
+func ResetSession(db *sql.DB, id string, puzzle Puzzle, maxMistakes int) (*GameState, error) {
+	state := &GameState{
+		PuzzleID:       puzzle.ID,
+		MistakesLeft:   maxMistakes,
+		MaxMistakes:    maxMistakes,
+		Solved:         []SolvedGroup{},
+		RemainingWords: AllWords(puzzle),
+		Status:         "playing",
+		Guesses:        []GuessAttempt{},
+	}
+	data, err := json.Marshal(state)
+	if err != nil {
+		return nil, err
+	}
+	now := time.Now().Unix()
+	_, err = db.Exec(
+		`UPDATE sessions SET puzzle_id=?, state=?, updated_at=? WHERE id=?`,
+		puzzle.ID, string(data), now, id,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("reset session: %w", err)
+	}
+	return state, nil
 }
 
 func ApplyGuess(state *GameState, result *GuessResult, cat *Category) {

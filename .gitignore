@@ -10,6 +10,13 @@ backend/connections.db*
 frontend/node_modules/
 frontend/dist/
 
+# Playwright
+frontend/test-results/
+frontend/playwright-report/
+
+# Go build artifacts
+backend/mcpdemo
+
 # Env
 .env
 .env.local

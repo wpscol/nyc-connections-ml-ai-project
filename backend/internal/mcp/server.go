@@ -15,11 +15,14 @@ import (
 )
 
 type gameAPI interface {
-	ProcessGuess(sessionID string, words []string) (*game.GuessResult, error)
+	ProcessGuess(sessionID string, words []string, source string) (*game.GuessResult, error)
 	GetSession(sessionID string) (*game.GameState, error)
 	LoadCurrentPuzzle() (*game.Puzzle, error)
 	LoadMaxMistakes() int
-	AdvancePuzzle()
+	BroadcastIfComplete(sessionID string)
+	RestartSession(sessionID string) (*game.GameState, error)
+	NextSession(sessionID string) (*game.GameState, error)
+	PrevSession(sessionID string) (*game.GameState, error)
 }
 
 // Build creates and returns the SSE HTTP handler for the MCP server.
@@ -117,23 +120,72 @@ func Build(srv gameAPI, hub *api.Hub, baseURL string) http.Handler {
 			words[i] = strings.TrimSpace(strings.ToUpper(p))
 		}
 
-		result, err := srv.ProcessGuess(sessionID, words)
+		result, err := srv.ProcessGuess(sessionID, words, "mcp")
 		if err != nil {
 			return mcpgo.NewToolResultError(err.Error()), nil
 		}
 
 		hub.Broadcast(sessionID, game.WSEvent{Type: "guess_result", Payload: result})
-		if result.Status == "won" || result.Status == "lost" {
-			hub.Broadcast(sessionID, game.WSEvent{
-				Type:    "game_complete",
-				Payload: map[string]interface{}{"won": result.Status == "won"},
-			})
-			if result.Status == "won" {
-				srv.AdvancePuzzle()
-			}
-		}
+		srv.BroadcastIfComplete(sessionID)
 
 		data, _ := json.Marshal(result)
+		return mcpgo.NewToolResultText(string(data)), nil
+	})
+
+	// restart_game — reset the current session to replay the same puzzle
+	s.AddTool(mcpgo.NewTool("restart_game",
+		mcpgo.WithDescription("Restart the current session: reshuffle the same puzzle, clear solved groups and mistakes. The UI updates live."),
+		mcpgo.WithString("session_id", mcpgo.Required(), mcpgo.Description("Game session ID")),
+	), func(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
+		args := req.GetArguments()
+		sessionID, _ := args["session_id"].(string)
+		if sessionID == "" {
+			return mcpgo.NewToolResultError("session_id required"), nil
+		}
+		state, err := srv.RestartSession(sessionID)
+		if err != nil {
+			return mcpgo.NewToolResultError(err.Error()), nil
+		}
+		out := map[string]interface{}{"status": state.Status, "remaining": state.RemainingWords, "note": "puzzle restarted"}
+		data, _ := json.Marshal(out)
+		return mcpgo.NewToolResultText(string(data)), nil
+	})
+
+	// next_game — advance the current session to the next puzzle
+	s.AddTool(mcpgo.NewTool("next_game",
+		mcpgo.WithDescription("Advance the current session to the next puzzle. Use after finishing a puzzle. The UI updates live."),
+		mcpgo.WithString("session_id", mcpgo.Required(), mcpgo.Description("Game session ID")),
+	), func(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
+		args := req.GetArguments()
+		sessionID, _ := args["session_id"].(string)
+		if sessionID == "" {
+			return mcpgo.NewToolResultError("session_id required"), nil
+		}
+		state, err := srv.NextSession(sessionID)
+		if err != nil {
+			return mcpgo.NewToolResultError(err.Error()), nil
+		}
+		out := map[string]interface{}{"status": state.Status, "remaining": state.RemainingWords, "puzzle_id": state.PuzzleID, "note": "advanced to next puzzle"}
+		data, _ := json.Marshal(out)
+		return mcpgo.NewToolResultText(string(data)), nil
+	})
+
+	// prev_game — rewind the current session to the previous puzzle
+	s.AddTool(mcpgo.NewTool("prev_game",
+		mcpgo.WithDescription("Go back to the previous puzzle in the current session. The UI updates live."),
+		mcpgo.WithString("session_id", mcpgo.Required(), mcpgo.Description("Game session ID")),
+	), func(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
+		args := req.GetArguments()
+		sessionID, _ := args["session_id"].(string)
+		if sessionID == "" {
+			return mcpgo.NewToolResultError("session_id required"), nil
+		}
+		state, err := srv.PrevSession(sessionID)
+		if err != nil {
+			return mcpgo.NewToolResultError(err.Error()), nil
+		}
+		out := map[string]interface{}{"status": state.Status, "remaining": state.RemainingWords, "puzzle_id": state.PuzzleID, "note": "went back to previous puzzle"}
+		data, _ := json.Marshal(out)
 		return mcpgo.NewToolResultText(string(data)), nil
 	})
 

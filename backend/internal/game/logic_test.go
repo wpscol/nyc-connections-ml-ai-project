@@ -143,3 +143,65 @@ func TestApplyGuess_AllSolved_SetsWon(t *testing.T) {
 		t.Fatalf("expected status=won, got %q", state.Status)
 	}
 }
+
+func TestComputeStats_PerfectWin(t *testing.T) {
+	state := &GameState{
+		MaxMistakes:  4,
+		MistakesLeft: 4,
+		Status:       "won",
+		Solved:       make([]SolvedGroup, 4),
+		Guesses: []GuessAttempt{
+			{Correct: true}, {Correct: true}, {Correct: true}, {Correct: true},
+		},
+	}
+	s := ComputeStats(state)
+	if s.TotalGuesses != 4 || s.CorrectGuesses != 4 {
+		t.Fatalf("expected 4/4 guesses, got %d/%d", s.CorrectGuesses, s.TotalGuesses)
+	}
+	if s.GroupsSolved != 4 {
+		t.Errorf("expected 4 groups solved, got %d", s.GroupsSolved)
+	}
+	if s.Mistakes != 0 {
+		t.Errorf("expected 0 mistakes, got %d", s.Mistakes)
+	}
+	if s.Accuracy != 100 {
+		t.Errorf("expected 100%% accuracy, got %d", s.Accuracy)
+	}
+	if !s.Won {
+		t.Error("expected Won=true")
+	}
+}
+
+func TestComputeStats_MixedAndLost(t *testing.T) {
+	state := &GameState{
+		MaxMistakes:  4,
+		MistakesLeft: 0,
+		Status:       "lost",
+		Solved:       make([]SolvedGroup, 2),
+		Guesses: []GuessAttempt{
+			{Correct: true}, {Correct: false}, {Correct: true},
+			{Correct: false}, {Correct: false}, {Correct: false},
+		},
+	}
+	s := ComputeStats(state)
+	if s.TotalGuesses != 6 || s.CorrectGuesses != 2 {
+		t.Fatalf("expected 2/6 guesses, got %d/%d", s.CorrectGuesses, s.TotalGuesses)
+	}
+	if s.Mistakes != 4 {
+		t.Errorf("expected 4 mistakes, got %d", s.Mistakes)
+	}
+	if s.Accuracy != 33 { // 2/6 = 33%
+		t.Errorf("expected 33%% accuracy, got %d", s.Accuracy)
+	}
+	if s.Won {
+		t.Error("expected Won=false")
+	}
+}
+
+func TestComputeStats_NoGuesses(t *testing.T) {
+	state := &GameState{MaxMistakes: 4, MistakesLeft: 4, Status: "playing"}
+	s := ComputeStats(state)
+	if s.TotalGuesses != 0 || s.Accuracy != 0 {
+		t.Fatalf("expected zero guesses and 0%% accuracy, got %d guesses %d%%", s.TotalGuesses, s.Accuracy)
+	}
+}

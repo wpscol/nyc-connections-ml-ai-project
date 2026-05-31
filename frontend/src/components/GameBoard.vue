@@ -4,6 +4,8 @@ import Tile from './Tile.vue'
 import SolvedGroup from './SolvedGroup.vue'
 import MistakeDots from './MistakeDots.vue'
 import Controls from './Controls.vue'
+import AttemptsLog from './AttemptsLog.vue'
+import StatsPanel from './StatsPanel.vue'
 
 const store = useGameStore()
 </script>
@@ -57,8 +59,8 @@ const store = useGameStore()
       Better luck next time!
     </div>
 
-    <!-- Mistakes + controls -->
-    <template v-if="store.status === 'playing' || store.status === 'lost'">
+    <!-- Mistakes + play controls (only while playing) -->
+    <template v-if="store.status === 'playing'">
       <MistakeDots
         class="mt-2"
         :remaining="store.mistakesLeft"
@@ -66,9 +68,42 @@ const store = useGameStore()
       />
       <Controls />
     </template>
-    <template v-else-if="store.status === 'won'">
-      <Controls />
-    </template>
+
+    <!-- Session controls: prev / restart / next (always available) -->
+    <div class="flex items-center justify-center gap-3 mt-3">
+      <button
+        class="px-4 py-1.5 rounded-full border border-gray-300 text-xs font-semibold text-gray-700 hover:bg-gray-100 transition-colors"
+        data-testid="btn-prev-inline"
+        @click="store.prev()"
+      >
+        ← Previous
+      </button>
+      <button
+        class="px-4 py-1.5 rounded-full border border-gray-300 text-xs font-semibold text-gray-700 hover:bg-gray-100 transition-colors"
+        data-testid="btn-restart-inline"
+        @click="store.restart()"
+      >
+        ↺ Restart
+      </button>
+      <button
+        class="px-4 py-1.5 rounded-full border border-gray-300 text-xs font-semibold text-gray-700 hover:bg-gray-100 transition-colors"
+        data-testid="btn-next-inline"
+        @click="store.next()"
+      >
+        Next Puzzle →
+      </button>
+      <button
+        v-if="store.finished && store.stats"
+        class="px-4 py-1.5 rounded-full border border-gray-300 text-xs font-semibold text-gray-700 hover:bg-gray-100 transition-colors"
+        data-testid="btn-view-stats"
+        @click="store.showStats = true"
+      >
+        📊 Stats
+      </button>
+    </div>
+
+    <!-- Live attempts log (player / AI / API) -->
+    <AttemptsLog />
 
     <!-- Toast -->
     <Transition name="fade">
@@ -80,6 +115,9 @@ const store = useGameStore()
         {{ store.toast }}
       </div>
     </Transition>
+
+    <!-- End-of-game stats overlay -->
+    <StatsPanel />
   </div>
 </template>
 

@@ -64,6 +64,30 @@ func SolvedDifficulties(solved []SolvedGroup) []int {
 	return out
 }
 
+// ComputeStats summarizes the attempt from the recorded guesses and state.
+func ComputeStats(state *GameState) GameStats {
+	total := len(state.Guesses)
+	correct := 0
+	for _, g := range state.Guesses {
+		if g.Correct {
+			correct++
+		}
+	}
+	acc := 0
+	if total > 0 {
+		acc = correct * 100 / total
+	}
+	return GameStats{
+		TotalGuesses:   total,
+		CorrectGuesses: correct,
+		GroupsSolved:   len(state.Solved),
+		Mistakes:       state.MaxMistakes - state.MistakesLeft,
+		MaxMistakes:    state.MaxMistakes,
+		Won:            state.Status == "won",
+		Accuracy:       acc,
+	}
+}
+
 // RemoveWords returns words slice with given words removed.
 func RemoveWords(words, toRemove []string) []string {
 	remove := make(map[string]bool, len(toRemove))
