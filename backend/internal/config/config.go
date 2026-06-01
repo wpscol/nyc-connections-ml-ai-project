@@ -11,6 +11,10 @@ type Config struct {
 	MaxMistakes  int
 	DataURL      string
 	MCPBasePath  string
+	// Embedding service (OpenAI-compatible, e.g. LM Studio)
+	EmbedURL   string // base URL, e.g. http://localhost:1234
+	EmbedModel string // e.g. text-embedding-nomic-embed-text-v1.5
+	EmbedKey   string // API key — optional for local servers
 }
 
 func Load() Config {
@@ -32,11 +36,19 @@ func Load() Config {
 	if dataURL == "" {
 		dataURL = "https://raw.githubusercontent.com/Eyefyre/NYT-Connections-Answers/main/connections.json"
 	}
+	embedURL := os.Getenv("EMBED_URL")
+	if embedURL == "" {
+		embedURL = "http://localhost:1234"
+	}
+	embedModel := os.Getenv("EMBED_MODEL") // empty = auto-discover from LM Studio /v1/models
 	return Config{
 		Port:        port,
 		DBPath:      dbPath,
 		MaxMistakes: maxMistakes,
 		DataURL:     dataURL,
 		MCPBasePath: "/mcp",
+		EmbedURL:    embedURL,
+		EmbedModel:  embedModel,
+		EmbedKey:    os.Getenv("EMBED_KEY"),
 	}
 }

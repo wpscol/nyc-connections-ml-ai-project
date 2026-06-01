@@ -42,6 +42,9 @@ Reference for this repo. Read before working. NYT Connections clone + MCP server
 │       ├── config/config.go   # env vars → Config struct
 │       ├── db/db.go           # Open + migrate (3 tables) + GetConfig/SetConfig
 │       ├── fetcher/fetcher.go # SeedIfEmpty: GitHub JSON → game.Puzzle → puzzles table
+│       ├── embeddings/        # semantic clustering (no game logic dependency)
+│       │   ├── client.go      # OpenAI-compatible HTTP embeddings client (LM Studio)
+│       │   └── cluster.go     # K-means++ + silhouette stats → SuggestGroups()
 │       ├── game/              # pure domain logic (no HTTP)
 │       │   ├── types.go       # Card, Category, Puzzle, GameState, GuessResult, stats, WSEvent
 │       │   ├── session.go     # Create/Get/Save/Reset session, ApplyGuess (mutates state)
@@ -161,8 +164,11 @@ Live reload backend: `air` (uses `.air.toml`).
 | `DB_PATH` | `./connections.db` | SQLite file |
 | `MAX_MISTAKES` | `4` | default per game (1–10) |
 | `DATA_URL` | GitHub raw JSON | puzzle source |
+| `EMBED_URL` | `http://localhost:1234` | LM Studio base URL |
+| `EMBED_MODEL` | *(empty — auto-discovers first loaded model via `/v1/models`)* | embedding model name; set explicitly to override |
+| `EMBED_KEY` | *(empty)* | API key — optional for local servers |
 
-`MCPBasePath` is `/mcp`, hardcoded in config (not env-driven).
+`MCPBasePath` is `/mcp`, hardcoded in config (not env-driven). If `EMBED_URL` is empty, the `suggest_groups` MCP tool starts up but returns an error message explaining how to enable it.
 
 ## Tests
 

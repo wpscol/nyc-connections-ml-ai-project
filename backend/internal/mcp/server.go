@@ -11,6 +11,7 @@ import (
 	"github.com/mark3labs/mcp-go/server"
 
 	"connections/internal/api"
+	"connections/internal/embeddings"
 	"connections/internal/game"
 )
 
@@ -55,30 +56,80 @@ Always try to solve easier groups first. A correct Purple guess early is risky; 
 - correct: true means the group was found; the category title and its 4 words are revealed
 - remaining: words still on the board (use this to choose your next guess)
 - solved: groups already found (their words are gone from the board)
+- tried_combinations: EVERY guess made so far this game — result is "correct", "one_away", or "wrong"
+
+## Tried combinations — MANDATORY pre-guess check
+get_state returns a tried_combinations list. BEFORE every submit_guess call you MUST:
+1. Read tried_combinations in full.
+2. Confirm your intended 4 words do NOT match any entry in that list (order does not matter — same set = duplicate).
+3. For one_away entries: identify which 3 words are likely correct (keep them), then try a different 4th word.
+4. For wrong entries: treat ALL 4 words as suspects — they likely span 2 groups; do not reuse that set.
+Submitting a duplicate combination is a wasted mistake. Never do it.
 
 ## Solving strategy
 1. Call new_game to start (or list_sessions to find an active session).
-2. Call get_state — read the remaining words carefully.
-3. Look for the most obvious group first (start with Yellow-level thinking):
+2. Call get_state — read remaining words AND tried_combinations carefully.
+3. Check tried_combinations: rule out any set you already know is wrong or one_away.
+4. Look for the most obvious group first (start with Yellow-level thinking):
    - Literal sets: "___ fish", "things in a kitchen", "shades of blue"
    - Shared prefix/suffix: all can follow "OVER___" or precede "___HOUSE"
    - Famous groups: "Beatles members", "US presidents"
-4. Pick the group you are MOST confident about and call submit_guess.
-5. Read the result:
-   - correct=true → call get_state again and repeat from step 3.
-   - one_away=true → you were close; swap one word and retry.
+5. Pick the group you are MOST confident about — verify it is not in tried_combinations — then call submit_guess.
+6. Read the result:
+   - correct=true → call get_state again and repeat from step 2.
+   - one_away=true → swap exactly one word (not all four) and retry.
    - correct=false, one_away=false → reconsider entirely; those 4 words likely span 2+ groups.
-6. Never guess the same wrong combination twice.
 7. If only 2 groups remain, the last one is forced — no need to guess it separately.
 
 ## Red-herring warning
 The puzzle deliberately puts misleading words on the board. A word that "obviously" fits one group may actually belong to another. When you are unsure between two groups, solve the one you are 100% sure of first to shrink the board.
 
+## Semantic embedding support (suggest_groups)
+When unsure about a grouping, call suggest_groups with the remaining words and the number of unsolved groups.
+It embeds every word using a local language model and clusters them by semantic similarity.
+
+Key output fields per group:
+- avg_similarity: mean pairwise cosine similarity (0–1). >0.80 = tight cluster; 0.60–0.80 = moderate; <0.60 = loose.
+- min_similarity: the weakest pair in the group — the word closest to that minimum is the most likely misfit to swap.
+- confidence: composite score (0.65×avg + 0.35×min) — higher is more trustworthy.
+- overall_quality: silhouette coefficient (-1 to 1). >0.5 = clean separation; 0.2–0.5 = OK; <0.2 = ambiguous.
+
+Important limitations:
+- Embeddings capture SEMANTIC meaning (usage context), not puzzle wordplay, puns, or "___ + word" fill-in patterns.
+- A Purple-difficulty group may look semantically scattered but still be the correct answer.
+- Use suggest_groups as a SECOND OPINION, not as truth. Cross-reference with tried_combinations before acting.
+- If suggest_groups and your own reasoning agree on a group → high confidence to submit.
+- If they disagree → solve a different group you are certain about first to shrink the board.
+
 ## Tool workflow
-new_game → get_state → (reason) → submit_guess → (repeat) → game ends → next_game or restart_game`
+new_game → get_state → (check tried_combinations) → (reason, optionally suggest_groups) → submit_guess → (repeat) → game ends → next_game or restart_game`
+
+// formatTriedCombinations converts the raw GuessAttempt slice into a compact
+// list suitable for the MCP response. Each entry carries the words, a plain
+// "result" string, and (for correct guesses) the difficulty level.
+func formatTriedCombinations(guesses []game.GuessAttempt) []map[string]interface{} {
+	out := make([]map[string]interface{}, 0, len(guesses))
+	for _, g := range guesses {
+		entry := map[string]interface{}{
+			"words": g.Words,
+		}
+		switch {
+		case g.Correct:
+			entry["result"] = "correct"
+			entry["difficulty"] = g.Difficulty
+		case g.OneAway:
+			entry["result"] = "one_away"
+		default:
+			entry["result"] = "wrong"
+		}
+		out = append(out, entry)
+	}
+	return out
+}
 
 // Build creates and returns the SSE HTTP handler for the MCP server.
-func Build(srv gameAPI, hub *api.Hub, baseURL string) http.Handler {
+// embedClient may be nil — the suggest_groups tool will report unavailable in that case.
+func Build(srv gameAPI, hub *api.Hub, baseURL string, embedClient *embeddings.Client) http.Handler {
 	s := server.NewMCPServer(
 		"connections-game",
 		"1.0.0",
@@ -138,10 +189,13 @@ func Build(srv gameAPI, hub *api.Hub, baseURL string) http.Handler {
 	// ── get_state ─────────────────────────────────────────────────────────────
 	s.AddTool(mcpgo.NewTool("get_state",
 		mcpgo.WithDescription(
-			"Get the full current state of a game session: remaining words on the board, "+
-				"already-solved groups, mistakes left, and game status. "+
-				"Call this at the start of your turn and after every guess to see the updated board. "+
-				"Use the remaining words to reason about which 4 share a theme — then submit ONLY that one group.",
+			"Get the full current state of a game session: remaining words, solved groups, "+
+				"mistakes left, game status, and the complete tried_combinations history. "+
+				"Call this at the start of every turn and after every guess. "+
+				"BEFORE calling submit_guess you MUST read tried_combinations and confirm your "+
+				"intended 4 words do not duplicate any previous attempt (order-independent). "+
+				"tried_combinations entries: result='correct' (group solved), 'one_away' (swap one word), "+
+				"'wrong' (entirely wrong set — do not reuse any of those 4 words together again).",
 		),
 		mcpgo.WithString("session_id", mcpgo.Required(), mcpgo.Description("Session ID returned by new_game or list_sessions")),
 	), func(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
@@ -156,6 +210,8 @@ func Build(srv gameAPI, hub *api.Hub, baseURL string) http.Handler {
 		}
 		hub.Broadcast(sessionID, game.WSEvent{Type: "state_sync", Payload: map[string]string{"session_id": sessionID}})
 
+		tried := formatTriedCombinations(state.Guesses)
+
 		var tip string
 		switch state.Status {
 		case "won":
@@ -164,21 +220,28 @@ func Build(srv gameAPI, hub *api.Hub, baseURL string) http.Handler {
 			tip = "Game over. Call restart_game to try again or next_game to move on."
 		default:
 			remaining := len(state.RemainingWords)
+			wrongCount := 0
+			for _, g := range state.Guesses {
+				if !g.Correct {
+					wrongCount++
+				}
+			}
 			tip = fmt.Sprintf(
-				"%d words remain in %d unsolved group(s). You have %d mistake(s) left. "+
-					"Scan remaining words for the most obvious shared theme, then call submit_guess.",
-				remaining, remaining/4, state.MistakesLeft,
+				"%d words remain in %d unsolved group(s). %d mistake(s) left. "+
+					"%d prior attempt(s) in tried_combinations — check it before guessing to avoid duplicates.",
+				remaining, remaining/4, state.MistakesLeft, len(tried),
 			)
 		}
 
 		out := map[string]interface{}{
-			"session_id":    sessionID,
-			"remaining":     state.RemainingWords,
-			"solved":        state.Solved,
-			"mistakes_left": state.MistakesLeft,
-			"max_mistakes":  state.MaxMistakes,
-			"status":        state.Status,
-			"tip":           tip,
+			"session_id":          sessionID,
+			"remaining":           state.RemainingWords,
+			"solved":              state.Solved,
+			"mistakes_left":       state.MistakesLeft,
+			"max_mistakes":        state.MaxMistakes,
+			"status":              state.Status,
+			"tried_combinations":  tried,
+			"tip":                 tip,
 		}
 		data, _ := json.Marshal(out)
 		return mcpgo.NewToolResultText(string(data)), nil
@@ -187,9 +250,9 @@ func Build(srv gameAPI, hub *api.Hub, baseURL string) http.Handler {
 	// ── get_board ─────────────────────────────────────────────────────────────
 	s.AddTool(mcpgo.NewTool("get_board",
 		mcpgo.WithDescription(
-			"Lightweight board view: remaining words and already-solved groups, without mistake counts. "+
-				"Use get_state instead when you need the full picture (mistakes left, status). "+
-				"Use get_board when you only need a quick look at what words are still available.",
+			"Lightweight board view: remaining words, solved groups, and tried_combinations history. "+
+				"Use get_state when you also need mistakes_left and status. "+
+				"Always check tried_combinations before calling submit_guess — never duplicate a prior attempt.",
 		),
 		mcpgo.WithString("session_id", mcpgo.Required(), mcpgo.Description("Session ID")),
 	), func(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
@@ -202,10 +265,12 @@ func Build(srv gameAPI, hub *api.Hub, baseURL string) http.Handler {
 		if err != nil {
 			return mcpgo.NewToolResultError(fmt.Sprintf("session not found: %s", err)), nil
 		}
+		tried := formatTriedCombinations(state.Guesses)
 		out := map[string]interface{}{
-			"remaining": state.RemainingWords,
-			"solved":    state.Solved,
-			"tip":       "Reason about which 4 remaining words share a theme, then call submit_guess with only those 4.",
+			"remaining":          state.RemainingWords,
+			"solved":             state.Solved,
+			"tried_combinations": tried,
+			"tip":                "Check tried_combinations first, then reason about which 4 remaining words share a theme, then call submit_guess.",
 		}
 		data, _ := json.Marshal(out)
 		return mcpgo.NewToolResultText(string(data)), nil
@@ -215,12 +280,14 @@ func Build(srv gameAPI, hub *api.Hub, baseURL string) http.Handler {
 	s.AddTool(mcpgo.NewTool("submit_guess",
 		mcpgo.WithDescription(
 			"Submit exactly 4 words as a single group guess. "+
-				"Words must come from the current remaining board (check get_state first). "+
+				"PRE-FLIGHT CHECK (mandatory): call get_state first and verify your 4 words do NOT "+
+				"match any entry in tried_combinations (order-independent set comparison). "+
+				"Submitting a duplicate wastes a mistake. "+
 				"Result interpretation: "+
 				"correct=true → group solved, category revealed, words removed from board; "+
-				"one_away=true → 3 of your 4 words were right, swap one word and retry; "+
-				"correct=false, one_away=false → wrong combination, reconsider all 4 words. "+
-				"RULE: submit ONLY ONE group per call. Always call get_state after to see the updated board before guessing again.",
+				"one_away=true → 3 of your 4 words were right, swap exactly one word and retry; "+
+				"correct=false, one_away=false → entirely wrong set, those 4 words span 2+ groups. "+
+				"RULE: submit ONE group per call. Call get_state after every guess before the next attempt.",
 		),
 		mcpgo.WithString("session_id", mcpgo.Required(), mcpgo.Description("Session ID")),
 		mcpgo.WithString("words", mcpgo.Required(), mcpgo.Description(
@@ -391,6 +458,94 @@ func Build(srv gameAPI, hub *api.Hub, baseURL string) http.Handler {
 		out := map[string]interface{}{
 			"max_mistakes": int(count),
 			"note":         fmt.Sprintf("New sessions will allow %d mistake(s). Call new_game to start one.", int(count)),
+		}
+		data, _ := json.Marshal(out)
+		return mcpgo.NewToolResultText(string(data)), nil
+	})
+
+	// ── suggest_groups ────────────────────────────────────────────────────────
+	s.AddTool(mcpgo.NewTool("suggest_groups",
+		mcpgo.WithDescription(
+			"Cluster words by semantic similarity using local embeddings to suggest likely groupings. "+
+				"Pass the REMAINING words from get_state and the number of unsolved groups. "+
+				"The tool embeds each word with a language model, runs K-means++ clustering, "+
+				"and returns groups ranked by confidence with the following statistics per group: "+
+				"avg_similarity (mean pairwise cosine similarity — higher = tighter semantic cluster), "+
+				"min_similarity (weakest pair — the word near this value is most likely the misfit to swap), "+
+				"confidence (composite score 0–1). "+
+				"overall_quality is the silhouette score: >0.5 clean separation, 0.2–0.5 moderate, <0.2 ambiguous. "+
+				"LIMITATION: embeddings capture word meaning, not puzzle wordplay or fill-in-the-blank patterns. "+
+				"Purple groups may score low despite being correct. "+
+				"Use this as a second opinion: if it agrees with your reasoning, submit confidently; "+
+				"if it disagrees, solve a group you are certain about first to shrink the board.",
+		),
+		mcpgo.WithString("words", mcpgo.Required(), mcpgo.Description(
+			"Comma-separated words to analyse — use the remaining words from get_state, "+
+				"e.g. PUMP,BOOT,MILE,SNEAKER,BANK,RIVER,SHORE,DELTA,ACE,KING,QUEEN,JACK,SPADE,CLUB,HEART,DIAMOND",
+		)),
+		mcpgo.WithNumber("group_count", mcpgo.Description(
+			"Number of groups to find (default 4). Set to the number of unsolved groups remaining.",
+		)),
+	), func(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
+		if embedClient == nil {
+			return mcpgo.NewToolResultError(
+				"Embedding service not configured. Set EMBED_URL (e.g. http://localhost:1234) and restart the server.",
+			), nil
+		}
+
+		args := req.GetArguments()
+		wordsStr, _ := args["words"].(string)
+		if wordsStr == "" {
+			return mcpgo.NewToolResultError("words required"), nil
+		}
+
+		rawParts := strings.Split(wordsStr, ",")
+		words := make([]string, 0, len(rawParts))
+		for _, p := range rawParts {
+			if w := strings.TrimSpace(strings.ToUpper(p)); w != "" {
+				words = append(words, w)
+			}
+		}
+		if len(words) < 2 {
+			return mcpgo.NewToolResultError("need at least 2 words to cluster"), nil
+		}
+
+		k := 4
+		if v, ok := args["group_count"].(float64); ok && v >= 1 {
+			k = int(v)
+		}
+		if k > len(words) {
+			k = len(words)
+		}
+
+		vecs, err := embedClient.Embed(ctx, words)
+		if err != nil {
+			return mcpgo.NewToolResultError(fmt.Sprintf("embedding failed: %v", err)), nil
+		}
+
+		result := embeddings.SuggestGroups(words, vecs, k, embedClient.Model())
+
+		// Build a natural-language interpretation of overall quality
+		var qualityLabel string
+		switch {
+		case result.OverallQuality >= 0.5:
+			qualityLabel = "strong — groups are tight and well-separated; high trust in these suggestions"
+		case result.OverallQuality >= 0.2:
+			qualityLabel = "moderate — reasonable separation; use alongside your own reasoning"
+		default:
+			qualityLabel = "weak — words may share context across groups (common with wordplay puzzles); treat as a hint only"
+		}
+
+		out := map[string]interface{}{
+			"suggested_groups":      result.Groups,
+			"overall_quality":       result.OverallQuality,
+			"overall_quality_label": qualityLabel,
+			"embedding_model":       result.EmbeddingModel,
+			"words_analysed":        words,
+			"guidance": "Cross-reference with tried_combinations before acting. " +
+				"avg_similarity > 0.80 = tight cluster. " +
+				"The word closest to min_similarity is the most likely misfit in a one_away situation. " +
+				"Purple-difficulty groups often score lower here — do not dismiss low-confidence groups outright.",
 		}
 		data, _ := json.Marshal(out)
 		return mcpgo.NewToolResultText(string(data)), nil

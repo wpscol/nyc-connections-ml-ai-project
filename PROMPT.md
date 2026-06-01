@@ -6,15 +6,24 @@ CATEGORY EXAMPLES:
 3. Fill-in: RUBBER ___ (BAND, STAMP, DUCK, BALL)
 
 TASK (Infinite Loop):
-1. List available sessions -> Connect to active browser session.
-2. Read the 16-word board.
-3. Find groups of 4 related words (highest confidence first).
-4. Submit one 4-word guess.
-   - Correct = 1 group solved. (Solve all 4 = WIN -> next puzzle).
-   - "1-away" = 3 words right. Swap 1 word -> resubmit.
-   - Wrong (Attempts remain) = Reevaluate. (CRITICAL: Track past guesses. NEVER submit same 4 words twice).
-   - Wrong (Max Mistakes) or Stuck = LOSS. IT IS OK TO FAIL. DO NOT try other options. Record stats and RESTART new game immediately.
-5. Track and print stats after each game.
+1. List sessions -> connect to active browser session (ws_active=true).
+2. get_state -> Read board words AND tried_combinations.
+3. Check tried_combinations BEFORE every guess:
+   - "correct" = solved, skip.
+   - "one_away" = 3 right; keep those 3, swap only the 4th word.
+   - "wrong" = bad set; never resubmit same 4 words in any order.
+4. Reason about groups (highest-confidence first).
+   - STUCK or low-confidence? Call suggest_groups with remaining words + unsolved group count.
+     -> avg_similarity > 0.80 = tight cluster (trust it).
+     -> min_similarity identifies the weakest word (most likely misfit in one_away).
+     -> overall_quality > 0.5 = clean separation; < 0.2 = treat as hint only (wordplay puzzle).
+     -> Cross-check suggestion against tried_combinations before acting.
+5. Submit one 4-word guess. Confirm not in tried_combinations first.
+   - Correct = 1 solved. (All 4 = WIN -> next_game).
+   - "1-away" = swap 1 word (use min_similarity word if suggest_groups was called) -> recheck -> resubmit.
+   - Wrong (attempts remain) = get_state -> re-read tried_combinations -> reevaluate (call suggest_groups again if needed).
+   - Wrong (max mistakes) or stuck = LOSS. IT IS OK TO FAIL. Record stats -> next_game immediately.
+6. Track and print stats after each game.
 
 STATS FORMAT:
 G[#]: [WIN/LOSS] ([#] mistakes) -> [W]-[L] | [Total Mistakes] total | [Avg] avg

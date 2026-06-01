@@ -10,6 +10,7 @@ import (
 	"connections/internal/api"
 	"connections/internal/config"
 	appdb "connections/internal/db"
+	"connections/internal/embeddings"
 	"connections/internal/fetcher"
 	"connections/internal/mcp"
 )
@@ -30,8 +31,11 @@ func main() {
 	hub := api.NewHub()
 	srv := api.NewServer(db, hub)
 
+	embedClient := embeddings.NewClient(cfg.EmbedURL, cfg.EmbedModel, cfg.EmbedKey)
+	log.Printf("embedding service: %s  model: %s", cfg.EmbedURL, cfg.EmbedModel)
+
 	baseURL := fmt.Sprintf("http://localhost:%s", cfg.Port)
-	mcpHandler := mcp.Build(srv, hub, baseURL)
+	mcpHandler := mcp.Build(srv, hub, baseURL, embedClient)
 
 	r := chi.NewRouter()
 	r.Mount("/", srv.Router())
