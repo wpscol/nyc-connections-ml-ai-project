@@ -1,0 +1,181 @@
+# CLAUDE.md
+
+Reference for this repo. Read before working. NYT Connections clone + MCP server so an LLM can play while a browser UI animates every move live over WebSocket.
+
+## What it is
+
+- 4×4 board, 16 words, 4 hidden groups of 4. Pick 4 → submit. Correct = group revealed (colored banner), tiles removed. Wrong = lose 1 mistake, tiles shake. Win = all 4 solved; loss = mistakes hit 0.
+- Two drivers act on the **same** game session: the human (browser REST) and an LLM (MCP tools). Both go through one shared code path; every change broadcasts over WebSocket so the UI reacts in real time.
+- Puzzle archive seeded once from GitHub ([Eyefyre/NYT-Connections-Answers](https://github.com/Eyefyre/NYT-Connections-Answers)) into SQLite.
+
+## Stack
+
+| Layer | Tech | Notes |
+|---|---|---|
+| Backend | Go 1.25 (`go.mod`; README says 1.26) | std `net/http` |
+| Router | go-chi/chi v5 | |
+| WebSocket | gorilla/websocket | |
+| DB | SQLite via `modernc.org/sqlite` (pure Go, no cgo) | WAL mode, single writer |
+| MCP | mark3labs/mcp-go v0.49.0 | SSE transport |
+| UUID | google/uuid | session IDs |
+| Frontend | Vue 3.5 + `<script setup>` TS | |
+| Build | Vite 8 | |
+| State | Pinia 3 | |
+| CSS | Tailwind 4 (`@tailwindcss/vite`) | |
+| Tests | Go `testing`, Vitest, Playwright | |
+| Toolchain | mise (`.mise.toml`: go 1.26.3, node lts) | |
+
+## Layout
+
+```
+.
+├── .mcp.json                  # MCP client config → http://localhost:8080/mcp/sse
+├── .mise.toml                 # go + node versions
+├── PLAN.md / PROMPT.md / README.md   # build plan, AI-solver loop prompt, user docs
+├── backend/
+│   ├── connections.db*        # SQLite (gitignored; auto-created + seeded on first boot)
+│   ├── .air.toml              # `air` live-reload → builds cmd/server to tmp/main
+│   ├── cmd/
+│   │   ├── server/main.go     # entrypoint: wires config→db→fetcher→hub→server→mcp, mounts chi
+│   │   └── mcpdemo/main.go    # e2e helper: solves WS-active session by reading answers from DB
+│   └── internal/
+│       ├── config/config.go   # env vars → Config struct
+│       ├── db/db.go           # Open + migrate (3 tables) + GetConfig/SetConfig
+│       ├── fetcher/fetcher.go # SeedIfEmpty: GitHub JSON → game.Puzzle → puzzles table
+│       ├── game/              # pure domain logic (no HTTP)
+│       │   ├── types.go       # Card, Category, Puzzle, GameState, GuessResult, stats, WSEvent
+│       │   ├── session.go     # Create/Get/Save/Reset session, ApplyGuess (mutates state)
+│       │   ├── logic.go       # ValidateGuess, AllWords (shuffle), ComputeStats, RemoveWords
+│       │   └── logic_test.go  # unit tests
+│       ├── api/
+│       │   ├── handlers.go    # Server: REST handlers + exported methods reused by MCP
+│       │   └── ws.go          # Hub: per-session client sets, Broadcast / BroadcastAll
+│       └── mcp/server.go      # Build(): registers MCP tools, wraps Server via gameAPI iface
+└── frontend/
+    └── src/
+        ├── main.ts            # createApp + Pinia
+        ├── App.vue            # shell: init session, mount GameBoard + SessionSelector
+        ├── types/game.ts      # TS mirror of backend JSON + color/source maps
+        ├── stores/game.ts     # Pinia store: all game state + actions + WS event handler
+        ├── composables/useWS.ts  # WebSocket connect/reconnect, dispatches to store
+        └── components/
+            ├── GameBoard.vue      # composes solved groups, tile grid, controls, logs, stats
+            ├── Tile.vue           # one word; selected/shaking/guessing/disabled visual states
+            ├── SolvedGroup.vue    # colored revealed-category banner
+            ├── MistakeDots.vue    # remaining-mistakes dots
+            ├── Controls.vue       # Shuffle / Deselect All / Submit
+            ├── SessionSelector.vue# dropdown: switch/delete/clear sessions, status emoji
+            ├── AttemptsLog.vue    # live newest-first log of every guess + source
+            └── StatsPanel.vue     # end-of-game modal: win/loss, accuracy, ✓/~/✗ recap
+```
+
+## Data model
+
+**SQLite tables** (`internal/db/db.go`):
+- `puzzles(id, date, data, played)` — `data` is a full `game.Puzzle` JSON blob (with answers).
+- `config(key, value)` — keys: `current_puzzle_id`, `max_mistakes`.
+- `sessions(id UUID, puzzle_id, state, created_at, updated_at)` — `state` is a `game.GameState` JSON blob; FK → puzzles.
+
+**Seeding** (`fetcher.go`): on boot, if `puzzles` empty, GETs `DATA_URL`. Raw GitHub schema uses `answers[].{level,group,members}`; fetcher converts to internal `Puzzle{Categories[].{Title,Difficulty,Cards}}` and stores. Sets `current_puzzle_id` = first puzzle, `max_mistakes` = default.
+
+**Difficulty → color**: `0 yellow, 1 green, 2 blue, 3 purple`. Maps live in `types/game.ts` (`DIFFICULTY_COLORS`, `DIFFICULTY_HEX`).
+
+**Group identity**: a solved group is keyed by its `difficulty` level. `ValidateGuess` skips already-solved difficulties; correct = all 4 submitted words match one unsolved category, one-away = exactly 3 match.
+
+## Backend flow
+
+`main.go`: `config.Load()` → `db.Open()` (migrate) → `fetcher.SeedIfEmpty()` → `api.NewHub()` → `api.NewServer(db, hub)` → `mcp.Build(srv, hub, baseURL)`. chi mounts `srv.Router()` at `/` and the MCP SSE handler at `/mcp`. Listens on `:PORT`.
+
+**`api.Server`** holds `db` + `hub`. The unexported `processGuess` / `loadCurrentPuzzle` / etc. are the real logic; exported PascalCase wrappers (`ProcessGuess`, `CreateSession`, `GetSession`, `RestartSession`, `NextSession`, `PrevSession`, `SetMaxMistakes`, `ListSessions`, `BroadcastIfComplete`, …) exist **so the MCP server can reuse the exact same path** — it depends on the `gameAPI` interface in `mcp/server.go`, not the concrete type.
+
+**Guess path** (REST `submitGuess` and MCP `submit_guess` both call `processGuess`):
+1. Load session; reject if not `playing`.
+2. `ValidateGuess` against the puzzle, skipping solved difficulties.
+3. `ApplyGuess` mutates state (decrement mistakes or append solved group + remove words; set `won`/`lost`).
+4. Append a `GuessAttempt` to the live log (records `source`: player/mcp/api, difficulty, one_away, timestamp).
+5. `SaveSession`.
+6. Caller broadcasts `guess_result`, then `broadcastIfComplete` may broadcast `game_complete` with stats.
+
+**Source tagging**: REST reads `X-Source` header (browser sends `player`, defaults to `api`); MCP passes `mcp`.
+
+**Puzzle navigation**: `next`/`prev` wrap around (`nextPuzzleID`/`prevPuzzleID`) and also advance the global `current_puzzle_id` pointer so freshly created sessions follow along. `restart` replays the same puzzle. All reset the session row and broadcast `session_reset`.
+
+## WebSocket (`api/ws.go`)
+
+`Hub` = `map[sessionID]→set of clients` guarded by RWMutex. Client connects `GET /ws?session=<id>`; `readPump` blocks until disconnect (drives unregister), `writePump` drains a 32-buffered send channel (non-blocking — drops if full). `ActiveSessions()` powers the `ws_active` flag in session listings (lets an LLM find the session a human is watching).
+
+**Event types** (server→client, `{type, payload}`):
+- `guess_result` — a `GuessResult` (includes `guessed` words + `source`).
+- `game_complete` — `{won, solved, stats}`.
+- `session_reset` — full new state after restart/next/prev.
+- `state_sync` — `{session_id}` only; tells UI to re-`GET` the session (fired by MCP `get_state`).
+- `config_update` — `{max_mistakes}` (broadcast to ALL sessions via `BroadcastAll`).
+
+## REST API
+
+| Method | Path | Purpose |
+|---|---|---|
+| GET | `/api/puzzle/current` | current puzzle words (shuffled, no answers) |
+| GET | `/api/sessions` | up to 20 recent sessions + `ws_active` |
+| DELETE | `/api/sessions` | delete all sessions |
+| POST | `/api/session` | create session on current puzzle → state |
+| GET | `/api/session/{id}` | full session state |
+| DELETE | `/api/session/{id}` | delete one session |
+| POST | `/api/session/{id}/guess` | body `{words:[4]}`; honors `X-Source` header |
+| POST | `/api/session/{id}/restart` | replay same puzzle |
+| POST | `/api/session/{id}/next` / `/prev` | move puzzle (wraps) |
+| PUT | `/api/config/max_mistakes` | body `{count}` 1–10 |
+| GET | `/ws?session={id}` | WebSocket upgrade |
+
+CORS is wide open (`*`). All JSON.
+
+## MCP server (`internal/mcp/server.go`)
+
+SSE at `http://localhost:8080/mcp/sse`. `Build()` registers tools, each wrapping a `gameAPI` method and broadcasting over the same `Hub`. Tool descriptions + a long `serverInstructions` string coach the LLM (solve easy groups first, never repeat a wrong guess, etc.).
+
+Tools: `new_game`, `list_sessions`, `get_state` (also fires `state_sync`), `get_board`, `submit_guess` (4 comma-separated UPPERCASED words; broadcasts `guess_result` + completion), `restart_game`, `next_game`, `prev_game`, `set_max_mistakes`. Every tool returns JSON text plus a `next_step`/`tip` hint.
+
+## Frontend flow
+
+`App.vue` calls `store.init()` (POST a session) on mount. `useWS()` watches `store.sessionId` and (re)connects the WebSocket, auto-reconnecting after 2s while `playing`. Incoming events route through `store.handleWSEvent`.
+
+**Pinia store (`stores/game.ts`)** is the single source of UI truth: `remaining`, `solved`, `selected` (max 4), `mistakesLeft`/`maxMistakes`, `status`, plus animation/log/stats fields (`shakingTiles`, `guessingTiles`, `attempts`, `stats`, `showStats`, `toast`). Actions cover the full REST surface (init, newGame, switch/delete/clearAll sessions, toggleTile, shuffle, deselectAll, submitGuess, restart, next, prev).
+
+**Echo handling**: local REST guesses increment `skipNextWSGuess` so the store ignores the WS echo of its own move (the REST response already updated state). External (MCP/API) guesses are NOT skipped — the store briefly highlights `guessingTiles` (~700ms) then applies the result, so the human sees the AI "thinking" before tiles resolve. Wrong guess → `triggerShake` (500ms). `game_complete` reveals `StatsPanel` after a delay so animations finish.
+
+## Running
+
+```bash
+mise install                        # go + node
+cd backend && go run ./cmd/server   # :8080, seeds DB on first boot
+cd frontend && npm install && npm run dev   # :5173, proxies /api /ws /mcp → :8080
+```
+
+Live reload backend: `air` (uses `.air.toml`).
+
+## Env vars
+
+| Var | Default | |
+|---|---|---|
+| `PORT` | `8080` | HTTP port |
+| `DB_PATH` | `./connections.db` | SQLite file |
+| `MAX_MISTAKES` | `4` | default per game (1–10) |
+| `DATA_URL` | GitHub raw JSON | puzzle source |
+
+`MCPBasePath` is `/mcp`, hardcoded in config (not env-driven).
+
+## Tests
+
+- Backend: `cd backend && go test ./...` (`game/logic_test.go` — guess validation, mistakes, win/loss, stats).
+- Frontend unit: `cd frontend && npm test` (Vitest; `stores/game.spec.ts` — store reactions incl. WS events; jsdom; excludes `e2e/`).
+- E2E: `npm run test:e2e` (Playwright; `e2e/features.spec.ts`, `e2e/ws-realtime.spec.ts`). `cmd/mcpdemo` drives a live session by reading answers from the DB to verify real-time WS/stats behavior.
+
+## Conventions & gotchas
+
+- **One logic path**: never duplicate guess/session logic in REST vs MCP — both must funnel through `api.Server` exported methods → `internal/game`. The `gameAPI` interface is the contract.
+- `internal/game` is pure (no `net/http`, no `database/sql` in `logic.go`); session persistence lives in `session.go`.
+- Session `state` and puzzle `data` are JSON blobs in SQLite — schema changes to `GameState`/`Puzzle` are backward-incompatible with existing rows; delete `connections.db*` to reseed.
+- `db.SetMaxOpenConns(1)` — SQLite single-writer; keep queries cheap.
+- TS types in `types/game.ts` mirror Go JSON tags (snake_case). Keep them in sync when changing payloads.
+- `set_max_mistakes` only affects NEW sessions; running sessions keep their count.
+- Solved groups are deduped by `title` on the client and skipped by `difficulty` on the server.
