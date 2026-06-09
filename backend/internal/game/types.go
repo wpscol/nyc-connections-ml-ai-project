@@ -31,6 +31,9 @@ type GameState struct {
 	RemainingWords []string       `json:"remaining_words"`
 	Status         string         `json:"status"` // "playing","won","lost"
 	Guesses        []GuessAttempt `json:"guesses"`
+	// PriorGuesses accumulates all guesses from previous restarts of the same puzzle.
+	// Never wiped on restart so the model can see what already worked/failed.
+	PriorGuesses   []GuessAttempt `json:"prior_guesses,omitempty"`
 }
 
 // GuessAttempt records a single guess for the live attempt log.

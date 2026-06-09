@@ -4,6 +4,7 @@ import { useGameStore } from './stores/game'
 import { useWS } from './composables/useWS'
 import GameBoard from './components/GameBoard.vue'
 import SessionSelector from './components/SessionSelector.vue'
+import MemoryViewer from './components/MemoryViewer.vue'
 
 const store = useGameStore()
 useWS()
@@ -29,8 +30,9 @@ onMounted(async () => {
       <div class="max-w-xl mx-auto px-4 py-4 flex items-center gap-3 flex-wrap">
         <h1 class="text-3xl font-black tracking-tight">Connections</h1>
         <span data-testid="puzzle-date" class="text-gray-500 text-base">{{ store.puzzleDate }}</span>
-        <div v-if="!loading && !error" class="ml-auto">
+        <div v-if="!loading && !error" class="ml-auto flex items-center gap-2">
           <SessionSelector />
+          <MemoryViewer />
         </div>
       </div>
     </header>

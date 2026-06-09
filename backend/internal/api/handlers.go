@@ -36,6 +36,7 @@ func (s *Server) Router() http.Handler {
 	r.Get("/api/session/{id}", s.getSession)
 	r.Delete("/api/session/{id}", s.deleteSession)
 	r.Post("/api/session/{id}/guess", s.submitGuess)
+	r.Get("/api/session/{id}/guesses", s.getGuesses)
 	r.Post("/api/session/{id}/restart", s.restartSession)
 	r.Post("/api/session/{id}/next", s.nextSession)
 	r.Post("/api/session/{id}/prev", s.prevSession)
@@ -217,7 +218,7 @@ func (s *Server) restartSession(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	newState, err := game.ResetSession(s.db, id, *puzzle, s.loadMaxMistakes())
+	newState, err := game.ResetSession(s.db, id, *puzzle, s.loadMaxMistakes(), mergeGuesses(state))
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -240,7 +241,7 @@ func (s *Server) nextSession(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	newState, err := game.ResetSession(s.db, id, *puzzle, s.loadMaxMistakes())
+	newState, err := game.ResetSession(s.db, id, *puzzle, s.loadMaxMistakes(), nil)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -266,7 +267,7 @@ func (s *Server) prevSession(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	newState, err := game.ResetSession(s.db, id, *puzzle, s.loadMaxMistakes())
+	newState, err := game.ResetSession(s.db, id, *puzzle, s.loadMaxMistakes(), nil)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -276,6 +277,33 @@ func (s *Server) prevSession(w http.ResponseWriter, r *http.Request) {
 	resp := stateResponseWithDate(id, newState, puzzle.Date)
 	s.hub.Broadcast(id, game.WSEvent{Type: "session_reset", Payload: resp})
 	jsonOK(w, resp)
+}
+
+func (s *Server) getGuesses(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	state, err := game.GetSession(s.db, id)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+	guesses := state.Guesses
+	if guesses == nil {
+		guesses = []game.GuessAttempt{}
+	}
+	jsonOK(w, map[string]interface{}{
+		"session_id": id,
+		"guesses":    guesses,
+		"total":      len(guesses),
+	})
+}
+
+// GetGuesses returns all guess attempts for a session including prior restarts. Exported for MCP.
+func (s *Server) GetGuesses(sessionID string) ([]game.GuessAttempt, error) {
+	state, err := game.GetSession(s.db, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	return mergeGuesses(state), nil
 }
 
 func (s *Server) deleteSession(w http.ResponseWriter, r *http.Request) {
@@ -451,7 +479,7 @@ func (s *Server) RestartSession(sessionID string) (*game.GameState, error) {
 	if err != nil {
 		return nil, err
 	}
-	newState, err := game.ResetSession(s.db, sessionID, *puzzle, s.loadMaxMistakes())
+	newState, err := game.ResetSession(s.db, sessionID, *puzzle, s.loadMaxMistakes(), mergeGuesses(state))
 	if err != nil {
 		return nil, err
 	}
@@ -474,7 +502,7 @@ func (s *Server) NextSession(sessionID string) (*game.GameState, error) {
 	if err != nil {
 		return nil, err
 	}
-	newState, err := game.ResetSession(s.db, sessionID, *puzzle, s.loadMaxMistakes())
+	newState, err := game.ResetSession(s.db, sessionID, *puzzle, s.loadMaxMistakes(), nil)
 	if err != nil {
 		return nil, err
 	}
@@ -498,7 +526,7 @@ func (s *Server) PrevSession(sessionID string) (*game.GameState, error) {
 	if err != nil {
 		return nil, err
 	}
-	newState, err := game.ResetSession(s.db, sessionID, *puzzle, s.loadMaxMistakes())
+	newState, err := game.ResetSession(s.db, sessionID, *puzzle, s.loadMaxMistakes(), nil)
 	if err != nil {
 		return nil, err
 	}
@@ -508,6 +536,14 @@ func (s *Server) PrevSession(sessionID string) (*game.GameState, error) {
 		Payload: stateResponseWithDate(sessionID, newState, puzzle.Date),
 	})
 	return newState, nil
+}
+
+// mergeGuesses combines prior_guesses + guesses into one flat slice for carry-over on restart.
+func mergeGuesses(state *game.GameState) []game.GuessAttempt {
+	merged := make([]game.GuessAttempt, 0, len(state.PriorGuesses)+len(state.Guesses))
+	merged = append(merged, state.PriorGuesses...)
+	merged = append(merged, state.Guesses...)
+	return merged
 }
 
 // nextPuzzleID returns the next puzzle id after current, wrapping to the first.

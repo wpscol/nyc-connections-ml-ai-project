@@ -5,7 +5,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"sort"
 	"strings"
+	"sync"
+	"time"
 
 	mcpgo "github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
@@ -15,10 +18,83 @@ import (
 	"connections/internal/game"
 )
 
+// MemNote is a single agent memory entry.
+type MemNote struct {
+	Key       string `json:"key"`
+	Content   string `json:"content"`
+	UpdatedAt int64  `json:"updated_at"` // unix ms
+}
+
+// MemoryStore is a simple in-process key→note store shared across tool calls.
+// It is exported so the REST layer can serve its contents.
+type MemoryStore struct {
+	mu    sync.Mutex
+	notes map[string]MemNote
+}
+
+func newMemoryStore() *MemoryStore {
+	return &MemoryStore{notes: make(map[string]MemNote)}
+}
+
+func (m *MemoryStore) write(key, content string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.notes[key] = MemNote{Key: key, Content: content, UpdatedAt: time.Now().UnixMilli()}
+}
+
+func (m *MemoryStore) list() []MemNote {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make([]MemNote, 0, len(m.notes))
+	for _, n := range m.notes {
+		out = append(out, n)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].UpdatedAt > out[j].UpdatedAt })
+	return out
+}
+
+func (m *MemoryStore) delete(key string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	_, ok := m.notes[key]
+	if ok {
+		delete(m.notes, key)
+	}
+	return ok
+}
+
+func (m *MemoryStore) clear() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	n := len(m.notes)
+	m.notes = make(map[string]MemNote)
+	return n
+}
+
+// Page returns a paginated slice of notes (newest first) and the total count.
+// page is 1-based; perPage must be ≥ 1.
+func (m *MemoryStore) Page(page, perPage int) ([]MemNote, int) {
+	all := m.list()
+	total := len(all)
+	if perPage < 1 {
+		perPage = 10
+	}
+	start := (page - 1) * perPage
+	if start >= total {
+		return []MemNote{}, total
+	}
+	end := start + perPage
+	if end > total {
+		end = total
+	}
+	return all[start:end], total
+}
+
 type gameAPI interface {
 	CreateSession() (id string, state *game.GameState, date string, err error)
 	ProcessGuess(sessionID string, words []string, source string) (*game.GuessResult, error)
 	GetSession(sessionID string) (*game.GameState, error)
+	GetGuesses(sessionID string) ([]game.GuessAttempt, error)
 	LoadCurrentPuzzle() (*game.Puzzle, error)
 	LoadMaxMistakes() int
 	SetMaxMistakes(count int) error
@@ -67,7 +143,7 @@ get_state returns a tried_combinations list. BEFORE every submit_guess call you 
 Submitting a duplicate combination is a wasted mistake. Never do it.
 
 ## Solving strategy
-1. Call new_game to start (or list_sessions to find an active session).
+1. Call list_sessions — join an existing session (ws_active=true preferred). You cannot create sessions.
 2. Call get_state — read remaining words AND tried_combinations carefully.
 3. Check tried_combinations: rule out any set you already know is wrong or one_away.
 4. Look for the most obvious group first (start with Yellow-level thinking):
@@ -80,6 +156,10 @@ Submitting a duplicate combination is a wasted mistake. Never do it.
    - one_away=true → swap exactly one word (not all four) and retry.
    - correct=false, one_away=false → reconsider entirely; those 4 words likely span 2+ groups.
 7. If only 2 groups remain, the last one is forced — no need to guess it separately.
+
+## After a game ends
+- WON → call next_game to advance to the next puzzle.
+- LOST → call restart_game to replay the same puzzle. Keep retrying until you win. Never skip a puzzle you lost.
 
 ## Red-herring warning
 The puzzle deliberately puts misleading words on the board. A word that "obviously" fits one group may actually belong to another. When you are unsure between two groups, solve the one you are 100% sure of first to shrink the board.
@@ -102,7 +182,16 @@ Important limitations:
 - If they disagree → solve a different group you are certain about first to shrink the board.
 
 ## Tool workflow
-new_game → get_state → (check tried_combinations) → (reason, optionally suggest_groups) → submit_guess → (repeat) → game ends → next_game or restart_game`
+list_sessions → get_state → (check tried_combinations) → (reason, optionally suggest_groups) → submit_guess → (repeat) → won: next_game | lost: restart_game`
+
+// allGuesses merges prior_guesses + guesses so the model sees the full history
+// including across restarts of the same puzzle.
+func allGuesses(state *game.GameState) []game.GuessAttempt {
+	out := make([]game.GuessAttempt, 0, len(state.PriorGuesses)+len(state.Guesses))
+	out = append(out, state.PriorGuesses...)
+	out = append(out, state.Guesses...)
+	return out
+}
 
 // formatTriedCombinations converts the raw GuessAttempt slice into a compact
 // list suitable for the MCP response. Each entry carries the words, a plain
@@ -127,9 +216,12 @@ func formatTriedCombinations(guesses []game.GuessAttempt) []map[string]interface
 	return out
 }
 
-// Build creates and returns the SSE HTTP handler for the MCP server.
+// Build creates the SSE HTTP handler for the MCP server and returns it together
+// with the MemoryStore so callers can expose its contents over REST.
 // embedClient may be nil — the suggest_groups tool will report unavailable in that case.
-func Build(srv gameAPI, hub *api.Hub, baseURL string, embedClient *embeddings.Client) http.Handler {
+func Build(srv gameAPI, hub *api.Hub, baseURL string, embedClient *embeddings.Client) (http.Handler, *MemoryStore) {
+	mem := newMemoryStore()
+
 	s := server.NewMCPServer(
 		"connections-game",
 		"1.0.0",
@@ -137,50 +229,26 @@ func Build(srv gameAPI, hub *api.Hub, baseURL string, embedClient *embeddings.Cl
 		server.WithInstructions(serverInstructions),
 	)
 
-	// ── new_game ─────────────────────────────────────────────────────────────
-	s.AddTool(mcpgo.NewTool("new_game",
-		mcpgo.WithDescription(
-			"Start a fresh game. Creates a new session for the current puzzle and returns the "+
-				"session_id you will pass to every other tool, plus the 16 shuffled board words. "+
-				"Call this first if you have no session yet, or after finishing a game and wanting to play again. "+
-				"If a browser is already open on the same puzzle, prefer list_sessions to share that session "+
-				"so the human can watch you play in real time.",
-		),
-	), func(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
-		id, state, date, err := srv.CreateSession()
-		if err != nil {
-			return mcpgo.NewToolResultError(err.Error()), nil
-		}
-		out := map[string]interface{}{
-			"session_id":    id,
-			"date":          date,
-			"puzzle_id":     state.PuzzleID,
-			"remaining":     state.RemainingWords,
-			"max_mistakes":  state.MaxMistakes,
-			"status":        state.Status,
-			"next_step":     "Call get_state with this session_id to see the board and start solving. Remember: solve ONE group at a time.",
-		}
-		data, _ := json.Marshal(out)
-		return mcpgo.NewToolResultText(string(data)), nil
-	})
-
 	// ── list_sessions ─────────────────────────────────────────────────────────
 	s.AddTool(mcpgo.NewTool("list_sessions",
 		mcpgo.WithDescription(
-			"List all existing game sessions and their status. "+
-				"ws_active=true means a human browser is currently connected to that session — "+
-				"use that session_id so the human can watch your moves in real time. "+
-				"status values: 'playing' (still going), 'won', 'lost'. "+
-				"Call this when you want to join or observe an in-progress game instead of starting a new one.",
+			"List all existing game sessions. ALWAYS call this first — you can only join existing sessions, not create new ones. "+
+				"Prefer ws_active=true sessions (human browser is watching). "+
+				"If no sessions exist, ask the human to open the browser first and try again — do not attempt to create a session. "+
+				"status: 'playing' = active, 'won'/'lost' = finished (call next_game on these).",
 		),
 	), func(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
 		sessions, err := srv.ListSessions()
 		if err != nil {
 			return mcpgo.NewToolResultError(err.Error()), nil
 		}
+		tip := "Join a session with ws_active=true and status='playing'. If all sessions are finished, call next_game on any of them."
+		if len(sessions) == 0 {
+			tip = "No sessions found. Ask the human to open the game in their browser, then call list_sessions again."
+		}
 		out := map[string]interface{}{
-			"sessions":  sessions,
-			"tip":       "Pick a session with ws_active=true and status='playing' to solve while the human watches. Then call get_state with that session_id.",
+			"sessions": sessions,
+			"tip":      tip,
 		}
 		data, _ := json.Marshal(out)
 		return mcpgo.NewToolResultText(string(data)), nil
@@ -210,25 +278,25 @@ func Build(srv gameAPI, hub *api.Hub, baseURL string, embedClient *embeddings.Cl
 		}
 		hub.Broadcast(sessionID, game.WSEvent{Type: "state_sync", Payload: map[string]string{"session_id": sessionID}})
 
-		tried := formatTriedCombinations(state.Guesses)
+		tried := formatTriedCombinations(allGuesses(state))
 
 		var tip string
 		switch state.Status {
 		case "won":
-			tip = "You won! Call next_game to play the next puzzle or restart_game to replay this one."
+			tip = "You won! Call next_game to advance to the next puzzle."
 		case "lost":
-			tip = "Game over. Call restart_game to try again or next_game to move on."
+			tip = "Game over. Call restart_game — never skip a puzzle you lost. tried_combinations carries over so you can see what already worked."
 		default:
 			remaining := len(state.RemainingWords)
 			wrongCount := 0
-			for _, g := range state.Guesses {
+			for _, g := range allGuesses(state) {
 				if !g.Correct {
 					wrongCount++
 				}
 			}
 			tip = fmt.Sprintf(
 				"%d words remain in %d unsolved group(s). %d mistake(s) left. "+
-					"%d prior attempt(s) in tried_combinations — check it before guessing to avoid duplicates.",
+					"%d attempt(s) total (including previous restarts) — NEVER resubmit any set already in tried_combinations.",
 				remaining, remaining/4, state.MistakesLeft, len(tried),
 			)
 		}
@@ -265,12 +333,12 @@ func Build(srv gameAPI, hub *api.Hub, baseURL string, embedClient *embeddings.Cl
 		if err != nil {
 			return mcpgo.NewToolResultError(fmt.Sprintf("session not found: %s", err)), nil
 		}
-		tried := formatTriedCombinations(state.Guesses)
+		tried := formatTriedCombinations(allGuesses(state))
 		out := map[string]interface{}{
 			"remaining":          state.RemainingWords,
 			"solved":             state.Solved,
 			"tried_combinations": tried,
-			"tip":                "Check tried_combinations first, then reason about which 4 remaining words share a theme, then call submit_guess.",
+			"tip":                "tried_combinations includes ALL attempts across restarts. Never resubmit any set in this list. correct=true entries show which words are confirmed grouped — use them to anchor your next guess.",
 		}
 		data, _ := json.Marshal(out)
 		return mcpgo.NewToolResultText(string(data)), nil
@@ -280,8 +348,9 @@ func Build(srv gameAPI, hub *api.Hub, baseURL string, embedClient *embeddings.Cl
 	s.AddTool(mcpgo.NewTool("submit_guess",
 		mcpgo.WithDescription(
 			"Submit exactly 4 words as a single group guess. "+
-				"PRE-FLIGHT CHECK (mandatory): call get_state first and verify your 4 words do NOT "+
-				"match any entry in tried_combinations (order-independent set comparison). "+
+				"PRE-FLIGHT CHECK (mandatory): call get_tried_combinations and verify your 4 words do NOT "+
+				"match any entry — comparison is ORDER-INDEPENDENT: {A,B,C,D} == {D,B,A,C} == any permutation. "+
+				"If you are even slightly unsure whether you already tried a combination, call get_tried_combinations first — never guess from memory. "+
 				"Submitting a duplicate wastes a mistake. "+
 				"Result interpretation: "+
 				"correct=true → group solved, category revealed, words removed from board; "+
@@ -322,9 +391,9 @@ func Build(srv gameAPI, hub *api.Hub, baseURL string, embedClient *embeddings.Cl
 		var nextStep string
 		switch {
 		case result.Status == "won":
-			nextStep = "Puzzle solved! Call next_game to advance or restart_game to replay."
+			nextStep = "Puzzle solved! Call next_game to advance to the next puzzle."
 		case result.Status == "lost":
-			nextStep = "No mistakes remaining — game over. Call restart_game to try again."
+			nextStep = "No mistakes remaining — call restart_game to retry this same puzzle. Never skip a puzzle you lost."
 		case result.Correct:
 			nextStep = fmt.Sprintf("Group %q solved! Call get_state to see the updated board and pick your next group.", result.Category.Title)
 		case result.OneAway:
@@ -354,9 +423,9 @@ func Build(srv gameAPI, hub *api.Hub, baseURL string, embedClient *embeddings.Cl
 	// ── restart_game ──────────────────────────────────────────────────────────
 	s.AddTool(mcpgo.NewTool("restart_game",
 		mcpgo.WithDescription(
-			"Reset the session to replay the same puzzle from scratch: clears solved groups, "+
-				"restores all 16 words, and resets mistakes to the configured maximum. "+
-				"Use this after losing, or to try a different solving strategy on the same puzzle. "+
+			"Reset the session to replay the same puzzle from scratch. "+
+				"REQUIRED after every loss — never skip a puzzle you failed. Keep restarting until you win it. "+
+				"Clears solved groups, restores all 16 words, resets mistakes to the configured maximum. "+
 				"The browser UI updates live.",
 		),
 		mcpgo.WithString("session_id", mcpgo.Required(), mcpgo.Description("Session ID to restart")),
@@ -374,7 +443,7 @@ func Build(srv gameAPI, hub *api.Hub, baseURL string, embedClient *embeddings.Cl
 			"status":       state.Status,
 			"remaining":    state.RemainingWords,
 			"max_mistakes": state.MaxMistakes,
-			"note":         "Puzzle reset. Call get_state to see the fresh board and start solving.",
+			"note":         "Puzzle reset. FIRST call get_tried_combinations — your full history from before the restart is preserved. correct=true entries show confirmed groups; use them to guide your next attempt.",
 		}
 		data, _ := json.Marshal(out)
 		return mcpgo.NewToolResultText(string(data)), nil
@@ -384,9 +453,9 @@ func Build(srv gameAPI, hub *api.Hub, baseURL string, embedClient *embeddings.Cl
 	s.AddTool(mcpgo.NewTool("next_game",
 		mcpgo.WithDescription(
 			"Advance the session to the next puzzle in the archive. "+
-				"Use after finishing (won or lost) to keep playing. "+
-				"Updates the global current-puzzle pointer so new sessions also start on this puzzle. "+
-				"The browser UI updates live.",
+				"Call this ONLY after winning (status='won'). "+
+				"After a loss, call restart_game instead — never skip a puzzle you failed. "+
+				"Updates the global current-puzzle pointer. The browser UI updates live.",
 		),
 		mcpgo.WithString("session_id", mcpgo.Required(), mcpgo.Description("Session ID to advance")),
 	), func(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
@@ -458,6 +527,38 @@ func Build(srv gameAPI, hub *api.Hub, baseURL string, embedClient *embeddings.Cl
 		out := map[string]interface{}{
 			"max_mistakes": int(count),
 			"note":         fmt.Sprintf("New sessions will allow %d mistake(s). Call new_game to start one.", int(count)),
+		}
+		data, _ := json.Marshal(out)
+		return mcpgo.NewToolResultText(string(data)), nil
+	})
+
+	// ── get_tried_combinations ───────────────────────────────────────────────
+	s.AddTool(mcpgo.NewTool("get_tried_combinations",
+		mcpgo.WithDescription(
+			"Return the complete guess history across ALL attempts including previous restarts of this puzzle. "+
+				"Each entry: words, result ('correct'|'one_away'|'wrong'), difficulty (-1 if wrong), source, timestamp. "+
+				"Matching is ORDER-INDEPENDENT: {A,B,C,D} is the same guess as {D,C,B,A} or any other permutation. "+
+				"Call this ANY TIME you are unsure whether a combination was already tried — do not rely on memory. "+
+				"MANDATORY after restart: scan result='correct' entries — confirmed groups, use as anchors. "+
+				"NEVER submit any set already in this list regardless of word order. Duplicate = wasted mistake.",
+		),
+		mcpgo.WithString("session_id", mcpgo.Required(), mcpgo.Description("Session ID")),
+	), func(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
+		args := req.GetArguments()
+		sessionID, _ := args["session_id"].(string)
+		if sessionID == "" {
+			return mcpgo.NewToolResultError("session_id required"), nil
+		}
+		guesses, err := srv.GetGuesses(sessionID)
+		if err != nil {
+			return mcpgo.NewToolResultError(fmt.Sprintf("session not found: %s", err)), nil
+		}
+		tried := formatTriedCombinations(guesses)
+		out := map[string]interface{}{
+			"session_id":         sessionID,
+			"tried_combinations": tried,
+			"total":              len(tried),
+			"tip":                "Includes ALL attempts across restarts. Before guessing: check correct=true entries (confirmed groups) and never resubmit any set in this list.",
 		}
 		data, _ := json.Marshal(out)
 		return mcpgo.NewToolResultText(string(data)), nil
@@ -551,5 +652,94 @@ func Build(srv gameAPI, hub *api.Hub, baseURL string, embedClient *embeddings.Cl
 		return mcpgo.NewToolResultText(string(data)), nil
 	})
 
-	return server.NewSSEServer(s, server.WithBaseURL(baseURL+"/mcp"))
+	// ── memory_note ───────────────────────────────────────────────────────────
+	s.AddTool(mcpgo.NewTool("memory_note",
+		mcpgo.WithDescription(
+			"Save a note that persists across turns within this run. "+
+				"Use this to record anything that could improve future guesses or future games: "+
+				"patterns you noticed, red herrings to watch for, words that tricked you, "+
+				"category shapes that recur, or lessons from a failed attempt. "+
+				"Writing the same key overwrites the previous value. "+
+				"Notes are wiped at the start of every new solver run.",
+		),
+		mcpgo.WithString("key", mcpgo.Required(), mcpgo.Description(
+			"Short identifier for this note, e.g. 'lesson_purple', 'red_herring_BANK', 'puzzle_pattern'",
+		)),
+		mcpgo.WithString("content", mcpgo.Required(), mcpgo.Description(
+			"The note content — what you learned, what to remember, what to avoid",
+		)),
+	), func(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
+		args := req.GetArguments()
+		key, _     := args["key"].(string)
+		content, _ := args["content"].(string)
+		if key == "" || content == "" {
+			return mcpgo.NewToolResultError("key and content required"), nil
+		}
+		mem.write(key, content)
+		out := map[string]interface{}{
+			"saved": key,
+			"tip":   "Call memory_list at the start of each game to recall your notes.",
+		}
+		data, _ := json.Marshal(out)
+		return mcpgo.NewToolResultText(string(data)), nil
+	})
+
+	// ── memory_list ───────────────────────────────────────────────────────────
+	s.AddTool(mcpgo.NewTool("memory_list",
+		mcpgo.WithDescription(
+			"Read all saved notes from this run. "+
+				"Call this at the start of every game to recall lessons from previous games. "+
+				"Notes contain patterns, red herrings, and strategies you recorded with memory_note.",
+		),
+	), func(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
+		notes := mem.list()
+		out := map[string]interface{}{
+			"notes": notes,
+			"count": len(notes),
+			"tip":   "Apply these lessons before guessing. Use memory_note to add new observations after each game.",
+		}
+		data, _ := json.Marshal(out)
+		return mcpgo.NewToolResultText(string(data)), nil
+	})
+
+	// ── memory_delete ─────────────────────────────────────────────────────────
+	s.AddTool(mcpgo.NewTool("memory_delete",
+		mcpgo.WithDescription(
+			"Delete a single note by key. "+
+				"Use this to prune stale entries: solved groups that are no longer relevant, "+
+				"hunches that turned out wrong, or notes from a puzzle you have now finished. "+
+				"Keeping memory lean makes memory_list easier to read.",
+		),
+		mcpgo.WithString("key", mcpgo.Required(), mcpgo.Description("Key of the note to delete")),
+	), func(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
+		args := req.GetArguments()
+		key, _ := args["key"].(string)
+		if key == "" {
+			return mcpgo.NewToolResultError("key required"), nil
+		}
+		found := mem.delete(key)
+		out := map[string]interface{}{
+			"deleted": found,
+			"key":     key,
+		}
+		data, _ := json.Marshal(out)
+		return mcpgo.NewToolResultText(string(data)), nil
+	})
+
+	// ── memory_clear ──────────────────────────────────────────────────────────
+	s.AddTool(mcpgo.NewTool("memory_clear",
+		mcpgo.WithDescription(
+			"Wipe all saved notes. Called automatically by the solver at the start of every run. "+
+				"Do not call this yourself during a run.",
+		),
+	), func(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
+		n := mem.clear()
+		out := map[string]interface{}{
+			"cleared": n,
+		}
+		data, _ := json.Marshal(out)
+		return mcpgo.NewToolResultText(string(data)), nil
+	})
+
+	return server.NewSSEServer(s, server.WithBaseURL(baseURL+"/mcp")), mem
 }

@@ -64,7 +64,13 @@ func SaveSession(db *sql.DB, id string, state *GameState) error {
 }
 
 // ResetSession resets an existing session row to a fresh game on the given puzzle.
-func ResetSession(db *sql.DB, id string, puzzle Puzzle, maxMistakes int) (*GameState, error) {
+// carryGuesses: pass the merged prior+current guesses when restarting the same puzzle
+// so the model retains full history; pass nil when navigating to a different puzzle.
+func ResetSession(db *sql.DB, id string, puzzle Puzzle, maxMistakes int, carryGuesses []GuessAttempt) (*GameState, error) {
+	prior := carryGuesses
+	if prior == nil {
+		prior = []GuessAttempt{}
+	}
 	state := &GameState{
 		PuzzleID:       puzzle.ID,
 		MistakesLeft:   maxMistakes,
@@ -73,6 +79,7 @@ func ResetSession(db *sql.DB, id string, puzzle Puzzle, maxMistakes int) (*GameS
 		RemainingWords: AllWords(puzzle),
 		Status:         "playing",
 		Guesses:        []GuessAttempt{},
+		PriorGuesses:   prior,
 	}
 	data, err := json.Marshal(state)
 	if err != nil {

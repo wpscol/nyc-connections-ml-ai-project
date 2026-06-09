@@ -26,3 +26,6 @@ backend/mcpdemo
 
 # Temporary
 tmp
+
+# Solver output
+output/

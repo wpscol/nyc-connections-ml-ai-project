@@ -31,12 +31,24 @@ Reference for this repo. Read before working. NYT Connections clone + MCP server
 .
 ├── .mcp.json                  # MCP client config → http://localhost:8080/mcp/sse
 ├── .mise.toml                 # go + node versions
-├── PLAN.md / PROMPT.md / README.md   # build plan, AI-solver loop prompt, user docs
+├── PROMPT/                    # AI-solver stage prompts (one file per game event)
+│   ├── system.md              #   system message: invariants + tool list
+│   ├── session_start.md       #   game start: list_sessions → memory_list → get_state
+│   ├── analysis.md            #   before each guess: reason, suggest_groups, pre-flight check
+│   ├── result_correct.md      #   after correct guess: save memory, next step
+│   ├── result_one_away.md     #   after one_away: swap logic, lock 3 correct words
+│   ├── result_wrong.md        #   after wrong guess: reconsideration strategy
+│   ├── game_won.md            #   after win: save lessons, delete solved_N, next_game
+│   ├── game_lost.md           #   after loss: save solved groups, restart_game
+│   └── restart.md             #   after restart: replay solved_N instantly, then analyse
+├── README.md                  # user docs
+├── output/                    # gitignored; CSV results from cmd/solve
 ├── backend/
 │   ├── connections.db*        # SQLite (gitignored; auto-created + seeded on first boot)
 │   ├── .air.toml              # `air` live-reload → builds cmd/server to tmp/main
 │   ├── cmd/
 │   │   ├── server/main.go     # entrypoint: wires config→db→fetcher→hub→server→mcp, mounts chi
+│   │   ├── solve/main.go      # standalone solver agent: infinite game loop via MCP + OpenAI API
 │   │   └── mcpdemo/main.go    # e2e helper: solves WS-active session by reading answers from DB
 │   └── internal/
 │       ├── config/config.go   # env vars → Config struct
@@ -53,12 +65,12 @@ Reference for this repo. Read before working. NYT Connections clone + MCP server
 │       ├── api/
 │       │   ├── handlers.go    # Server: REST handlers + exported methods reused by MCP
 │       │   └── ws.go          # Hub: per-session client sets, Broadcast / BroadcastAll
-│       └── mcp/server.go      # Build(): registers MCP tools, wraps Server via gameAPI iface
+│       └── mcp/server.go      # Build(): registers MCP tools, exports MemoryStore for REST
 └── frontend/
     └── src/
         ├── main.ts            # createApp + Pinia
-        ├── App.vue            # shell: init session, mount GameBoard + SessionSelector
-        ├── types/game.ts      # TS mirror of backend JSON + color/source maps
+        ├── App.vue            # shell: init session, mount GameBoard + SessionSelector + MemoryViewer
+        ├── types/game.ts      # TS mirror of backend JSON + color/source maps + MemNote/MemoryPage
         ├── stores/game.ts     # Pinia store: all game state + actions + WS event handler
         ├── composables/useWS.ts  # WebSocket connect/reconnect, dispatches to store
         └── components/
@@ -68,6 +80,7 @@ Reference for this repo. Read before working. NYT Connections clone + MCP server
             ├── MistakeDots.vue    # remaining-mistakes dots
             ├── Controls.vue       # Shuffle / Deselect All / Submit
             ├── SessionSelector.vue# dropdown: switch/delete/clear sessions, status emoji
+            ├── MemoryViewer.vue   # 🧠 dropdown: paginated AI memory notes, polls every 4s
             ├── AttemptsLog.vue    # live newest-first log of every guess + source
             └── StatsPanel.vue     # end-of-game modal: win/loss, accuracy, ✓/~/✗ recap
 ```
@@ -81,15 +94,21 @@ Reference for this repo. Read before working. NYT Connections clone + MCP server
 
 **Seeding** (`fetcher.go`): on boot, if `puzzles` empty, GETs `DATA_URL`. Raw GitHub schema uses `answers[].{level,group,members}`; fetcher converts to internal `Puzzle{Categories[].{Title,Difficulty,Cards}}` and stores. Sets `current_puzzle_id` = first puzzle, `max_mistakes` = default.
 
+**`GameState` fields** (stored as JSON blob in `sessions.state`):
+- `puzzle_id`, `mistakes_left`, `max_mistakes`, `solved`, `remaining_words`, `status`, `guesses` — current-game data.
+- `prior_guesses []GuessAttempt` — guess history carried over from previous restarts of the **same** puzzle. Wiped when navigating to a new puzzle (`next`/`prev`). Both `guesses` and `prior_guesses` are merged by `GetGuesses()` and surfaced in `get_tried_combinations` so the model sees full history across restarts.
+
 **Difficulty → color**: `0 yellow, 1 green, 2 blue, 3 purple`. Maps live in `types/game.ts` (`DIFFICULTY_COLORS`, `DIFFICULTY_HEX`).
 
 **Group identity**: a solved group is keyed by its `difficulty` level. `ValidateGuess` skips already-solved difficulties; correct = all 4 submitted words match one unsolved category, one-away = exactly 3 match.
 
 ## Backend flow
 
-`main.go`: `config.Load()` → `db.Open()` (migrate) → `fetcher.SeedIfEmpty()` → `api.NewHub()` → `api.NewServer(db, hub)` → `mcp.Build(srv, hub, baseURL)`. chi mounts `srv.Router()` at `/` and the MCP SSE handler at `/mcp`. Listens on `:PORT`.
+`main.go`: `config.Load()` → `db.Open()` (migrate) → `fetcher.SeedIfEmpty()` → `api.NewHub()` → `api.NewServer(db, hub)` → `mcp.Build(srv, hub, baseURL, embedClient)` → returns `(mcpHandler, memStore)`. chi mounts `srv.Router()` at `/`, MCP SSE handler at `/mcp`, and `memoriesHandler(memStore)` at `GET /api/memories`. Listens on `:PORT`.
 
-**`api.Server`** holds `db` + `hub`. The unexported `processGuess` / `loadCurrentPuzzle` / etc. are the real logic; exported PascalCase wrappers (`ProcessGuess`, `CreateSession`, `GetSession`, `RestartSession`, `NextSession`, `PrevSession`, `SetMaxMistakes`, `ListSessions`, `BroadcastIfComplete`, …) exist **so the MCP server can reuse the exact same path** — it depends on the `gameAPI` interface in `mcp/server.go`, not the concrete type.
+**`api.Server`** holds `db` + `hub`. The unexported `processGuess` / `loadCurrentPuzzle` / etc. are the real logic; exported PascalCase wrappers (`ProcessGuess`, `CreateSession`, `GetSession`, `GetGuesses`, `RestartSession`, `NextSession`, `PrevSession`, `SetMaxMistakes`, `ListSessions`, `BroadcastIfComplete`, …) exist **so the MCP server can reuse the exact same path** — it depends on the `gameAPI` interface in `mcp/server.go`, not the concrete type.
+
+`GetGuesses(sessionID)` merges `state.PriorGuesses + state.Guesses` into a single flat slice — the canonical full history for a session across all restarts.
 
 **Guess path** (REST `submitGuess` and MCP `submit_guess` both call `processGuess`):
 1. Load session; reject if not `playing`.
@@ -101,7 +120,7 @@ Reference for this repo. Read before working. NYT Connections clone + MCP server
 
 **Source tagging**: REST reads `X-Source` header (browser sends `player`, defaults to `api`); MCP passes `mcp`.
 
-**Puzzle navigation**: `next`/`prev` wrap around (`nextPuzzleID`/`prevPuzzleID`) and also advance the global `current_puzzle_id` pointer so freshly created sessions follow along. `restart` replays the same puzzle. All reset the session row and broadcast `session_reset`.
+**Puzzle navigation**: `next`/`prev` wrap around (`nextPuzzleID`/`prevPuzzleID`) and also advance the global `current_puzzle_id` pointer so freshly created sessions follow along. `restart` replays the same puzzle. All call `game.ResetSession(db, id, puzzle, maxMistakes, carryGuesses)` where `carryGuesses` is the merged history for restart (preserving cross-restart memory) and `nil` for next/prev (wipes history). All broadcast `session_reset`.
 
 ## WebSocket (`api/ws.go`)
 
@@ -128,15 +147,75 @@ Reference for this repo. Read before working. NYT Connections clone + MCP server
 | POST | `/api/session/{id}/restart` | replay same puzzle |
 | POST | `/api/session/{id}/next` / `/prev` | move puzzle (wraps) |
 | PUT | `/api/config/max_mistakes` | body `{count}` 1–10 |
+| GET | `/api/session/{id}/guesses` | merged full guess history (prior + current) |
+| GET | `/api/memories?page=N&per_page=N` | paginated AI memory notes (newest first) |
 | GET | `/ws?session={id}` | WebSocket upgrade |
 
 CORS is wide open (`*`). All JSON.
 
+`/api/memories` response: `{ notes: [{key, content, updated_at}], total, page, per_page, pages }`. Backed by the in-process `mcp.MemoryStore`; empty until the solver agent writes notes.
+
 ## MCP server (`internal/mcp/server.go`)
 
-SSE at `http://localhost:8080/mcp/sse`. `Build()` registers tools, each wrapping a `gameAPI` method and broadcasting over the same `Hub`. Tool descriptions + a long `serverInstructions` string coach the LLM (solve easy groups first, never repeat a wrong guess, etc.).
+SSE at `http://localhost:8080/mcp/sse`. `Build(srv, hub, baseURL, embedClient) (http.Handler, *MemoryStore)` registers tools and returns both the SSE handler and the exported `MemoryStore` so `main.go` can expose it over REST.
 
-Tools: `new_game`, `list_sessions`, `get_state` (also fires `state_sync`), `get_board`, `submit_guess` (4 comma-separated UPPERCASED words; broadcasts `guess_result` + completion), `restart_game`, `next_game`, `prev_game`, `set_max_mistakes`. Every tool returns JSON text plus a `next_step`/`tip` hint.
+**Tools** (no `new_game` — the agent can only join existing sessions):
+| Tool | Purpose |
+|---|---|
+| `list_sessions` | list existing sessions; join `ws_active=true` preferred |
+| `get_state` | full state + tried_combinations; fires `state_sync` WS event |
+| `get_board` | lightweight board view (no mistakes/status) |
+| `get_tried_combinations` | full guess history across all restarts; order-independent |
+| `submit_guess` | 4 comma-separated UPPERCASED words; broadcasts `guess_result` + completion |
+| `restart_game` | reset same puzzle; carries prior_guesses forward |
+| `next_game` | advance to next puzzle (call only after winning) |
+| `prev_game` | go back to previous puzzle |
+| `set_max_mistakes` | change mistake limit for future sessions (1–10) |
+| `suggest_groups` | semantic K-means++ clustering of remaining words |
+| `memory_note` | write/overwrite a key→content note in `MemoryStore` |
+| `memory_list` | read all notes |
+| `memory_delete` | delete one note by key |
+| `memory_clear` | wipe all notes (called automatically by solver at startup) |
+
+Every tool returns JSON text with a `next_step`/`tip` hint. `MemoryStore` is an in-process map guarded by a mutex; notes survive across games within one server run and are wiped on solver restart.
+
+## Solver agent (`cmd/solve/main.go`)
+
+Standalone Go binary that plays Connections infinitely via MCP + any OpenAI-compatible API (LM Studio default).
+
+```bash
+cd backend
+go run ./cmd/solve                               # infinite, auto-detect model
+go run ./cmd/solve -rounds 5                     # stop after 5 games
+go run ./cmd/solve -model gemma-4                # explicit model name
+go run ./cmd/solve -base-url http://host:1234/v1
+go run ./cmd/solve -max-tokens 2048              # cap tokens per response
+go run ./cmd/solve -csv ../output/my.csv         # custom CSV path (default: ../output/results.csv)
+go run ./cmd/solve -prompt-dir ../PROMPT         # custom stage prompt directory
+```
+
+**Stage-based prompt injection** — instead of one monolithic system prompt, `PROMPT/` holds 9 focused files. `runGame()` queues the matching file as a user message whenever a relevant event fires:
+
+| Trigger | File injected |
+|---|---|
+| Game start | `session_start.md` (first user message) |
+| `get_tried_combinations` called | `analysis.md` |
+| `submit_guess` → correct, still playing | `result_correct.md` |
+| `submit_guess` → one_away | `result_one_away.md` |
+| `submit_guess` → wrong | `result_wrong.md` |
+| `submit_guess` → status=won | `game_won.md` |
+| `submit_guess` → status=lost | `game_lost.md` |
+| `restart_game` called | `restart.md` |
+
+Multiple events in the same turn use priority: result (3) > restart (2) > analysis (1). Higher-priority stage overwrites lower. Terminal stages (`won`/`lost`) are injected immediately before `runGame` returns.
+
+**Other key behaviours:**
+- `system.md` is the system message: invariants only, no per-stage guidance.
+- `contextReminder` (injected every 30 turns) is now minimal — a safety net, not the primary instruction source.
+- `resolveModel()` skips models with "embed" or "rerank" in the name.
+- Wipes `MemoryStore` via `memory_clear` before the model sees anything.
+- `noToolStreak` detector: nudge after 1 no-tool turn, abort after 3.
+- CSV rows: `game, timestamp, status, mistakes, max_mistakes, turns, session_id`. Header written only on new file.
 
 ## Frontend flow
 
@@ -145,6 +224,8 @@ Tools: `new_game`, `list_sessions`, `get_state` (also fires `state_sync`), `get_
 **Pinia store (`stores/game.ts`)** is the single source of UI truth: `remaining`, `solved`, `selected` (max 4), `mistakesLeft`/`maxMistakes`, `status`, plus animation/log/stats fields (`shakingTiles`, `guessingTiles`, `attempts`, `stats`, `showStats`, `toast`). Actions cover the full REST surface (init, newGame, switch/delete/clearAll sessions, toggleTile, shuffle, deselectAll, submitGuess, restart, next, prev).
 
 **Echo handling**: local REST guesses increment `skipNextWSGuess` so the store ignores the WS echo of its own move (the REST response already updated state). External (MCP/API) guesses are NOT skipped — the store briefly highlights `guessingTiles` (~700ms) then applies the result, so the human sees the AI "thinking" before tiles resolve. Wrong guess → `triggerShake` (500ms). `game_complete` reveals `StatsPanel` after a delay so animations finish.
+
+**`MemoryViewer.vue`**: `🧠 N` button in the header (right of `SessionSelector`). Opens a dropdown showing AI memory notes from `GET /api/memories` — key, content, timestamp. Polls every 4s while open so notes appear live as the solver writes them. Badge count updates even while closed. Pagination: 8 notes per page, prev/next controls appear when `pages > 1`.
 
 ## Running
 

@@ -83,6 +83,20 @@ export const DIFFICULTY_HEX: Record<number, string> = {
   3: '#9333ea',
 }
 
+export interface MemNote {
+  key: string
+  content: string
+  updated_at: number // unix ms
+}
+
+export interface MemoryPage {
+  notes: MemNote[]
+  total: number
+  page: number
+  per_page: number
+  pages: number
+}
+
 export const SOURCE_LABEL: Record<GuessSource, string> = {
   player: '🧑 You',
   mcp: '🤖 AI (MCP)',

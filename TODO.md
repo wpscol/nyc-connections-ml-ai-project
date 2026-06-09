@@ -1,4 +1,0 @@
-- [ ] Add browser integration
-- [ ] Add some kind of memory
-- [ ] Adjust prompt to give it more precise information and more information on each steps
-- [ ] Encourage the LLM to generate massive list of possible options and evaluate them one by one (to help it find the best option)
