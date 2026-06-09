@@ -1,4 +1,4 @@
-Out of mistakes. Before restarting, lock in everything you know.
+Out of mistakes — no problem, this is just a reset. A loss costs nothing: you replay the SAME puzzle and now know more than last time. Before restarting, lock everything you learned into memory so the next attempt is faster.
 
 1. Save each correctly solved group to memory (you will re-submit these for free after restart):
    memory_note(key="solved_1", content="WORD1,WORD2,WORD3,WORD4=CATEGORY TITLE")
@@ -11,4 +11,4 @@ Out of mistakes. Before restarting, lock in everything you know.
    • Any reliable hunch not yet tested:
      memory_note(key="hunch_THEME", content="description")
 
-3. Call restart_game. The board resets but your full guess history is preserved in tried_combinations.
+3. Call restart_game. The board resets but your full guess history is preserved in tried_combinations and your memory log is intact — replay confirmed groups for free, skip the dead ends, and probe the rest aggressively. Each restart you converge faster. Restart as many times as it takes; there is no penalty.

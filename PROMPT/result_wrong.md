@@ -1,16 +1,16 @@
-Wrong guess. All 4 words are suspects — they span 2 or more groups.
+Wrong guess. Those 4 words span 2+ groups. Cross it off and KEEP MOVING — don't stall.
 
-Do NOT resubmit any permutation of those 4 words together.
+1. memory_note(key="ruled_out_THEME", content="W1,W2,W3,W4 — wrong") so you never revisit it.
+2. Go straight to the NEXT candidate on your ranked list and submit it. Don't re-analyse the whole board.
 
-0. memory_note(key="ruled_out_THEME", content="W1,W2,W3,W4 — wrong, span 2+ groups") so you never revisit this grouping.
-1. call get_tried_combinations — review every dead end so far.
-2. call get_state — re-read remaining words with fresh eyes.
-3. Ask: which 2 of the 4 wrong words might actually belong to the same hidden group? Note any pairing hunch to memory.
-4. Look for a theme you have not tried yet — something lateral, wordplay, fill-in, double meaning.
+If mistakes_left ≥ 2: stay aggressive. Fire your next-best untried group right now.
+You learn more from 3 quick guesses than from one long deliberation.
 
-If stuck: call suggest_groups on the remaining words and look for the tightest cluster (avg_similarity > 0.80) that you haven't attempted.
-Write any new hunches to memory_note before guessing again.
+Only if your candidate list is empty AND you have no clear next guess:
+• call get_state, scan the remaining words for any pairing you trust.
+• call suggest_groups and grab the tightest untried cluster (avg_similarity > 0.80).
+• build 2-3 fresh candidates, then immediately submit the top one.
 
-PROBE WHILE YOU CAN: if mistakes_left ≥ 2, don't agonise. Submit your strongest untried group even at moderate confidence.
-A one_away result tells you 3 words are correct — that single signal often cracks the whole puzzle.
-Spend a spare mistake to buy information rather than re-thinking the same words over and over.
+If mistakes_left = 1: take your single best shot. Don't freeze — if it loses, you restart the same puzzle with every confirmed group and dead end saved in memory, so the next attempt is faster and stronger.
+
+Momentum wins. A wrong guess is progress: it eliminated a dead end. A lost game is progress too: it fills your memory log. Submit the next one — fear nothing.

@@ -12,5 +12,5 @@ Board is reset. Same puzzle, fresh mistakes. Execute in order:
    • wrong entries — all permutations are dead ends, skip entirely.
    • one_away entries — check memory for oneaway_THEME to find the 3 confirmed words.
 
-4. Begin fresh analysis on the remaining unknown words.
+4. Probe the remaining unknown words aggressively — generate candidates and guess fast.
    If stuck, call memory_list again — a hunch or partial note may unlock the next group.

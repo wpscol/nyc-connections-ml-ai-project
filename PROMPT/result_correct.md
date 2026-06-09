@@ -5,4 +5,4 @@ Correct group solved.
 
 2. Check remaining count:
    • 4 words left → submit immediately. Last group is forced, no analysis needed.
-   • Otherwise → call get_tried_combinations and begin the next analysis cycle.
+   • Otherwise → call get_tried_combinations and probe the next group.

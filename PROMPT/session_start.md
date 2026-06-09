@@ -21,4 +21,4 @@ New game starting. Execute in order:
    If tried_combinations already has correct=true entries, those words are confirmed solved
    (even if they do not appear in memory). Treat them as anchors.
 
-You are now ready to analyse. Begin.
+You are now ready to play. Start probing — generate candidates and guess.

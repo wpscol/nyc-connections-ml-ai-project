@@ -13,5 +13,5 @@ Puzzle solved. Do this before advancing:
 
 3. Call memory_list to confirm the cleanup — only cross-puzzle lessons should remain.
 
-4. Call next_game to advance — then STOP. Do not analyse the new board here.
-   The next puzzle is a fresh start; its analysis begins on the next turn, not now.
+4. Call next_game to advance — then STOP. Do not start guessing the new board here.
+   The next puzzle is a fresh start; it begins on the next turn, not now.

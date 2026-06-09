@@ -6,9 +6,10 @@ This is a GIFT: you now know 3 words of a real group. Capitalise on it immediate
    • Check memory_list for any "ambiguous_WORD" notes on these words.
    • Which word could plausibly belong to a different group?
 
-2. Swap exactly 1 word. Do NOT change all four.
+2. Swap exactly 1 word and RESUBMIT FAST. Do NOT change all four, do not over-think it.
+   Don't know the misfit for sure? Just swap your weakest-feeling word and fire — burn through the candidates for the 4th slot one at a time until it locks. Running low on mistakes is fine: even if you exhaust them, save the 3 confirmed words and restart — you'll snap this group instantly next attempt.
 
 3. memory_note: key="oneaway_THEME", content="WORD_A,WORD_B,WORD_C confirmed correct; WORD_X was wrong".
-   This locks in 3 known-correct words for your next attempt.
+   This locks in the 3 known-correct words so each retry only changes the 4th.
 
-4. Call get_tried_combinations to verify the new 4-word set is not already there, then submit.
+4. Quick check the new set isn't already in tried_combinations, then submit immediately.

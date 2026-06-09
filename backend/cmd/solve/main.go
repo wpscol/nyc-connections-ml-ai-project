@@ -38,7 +38,7 @@ const (
 	progressEvery = 8  // game-state context injection (specific)
 
 	watchdogTimeout    = 3 * time.Minute
-	watchdogTokenLimit = 8_000 // approximate content tokens before interrupt
+	watchdogTokenLimit = 2_000 // approximate content tokens before interrupt
 	maxOverthinks      = 3     // consecutive watchdog triggers before aborting a game
 
 	repeatTailLen   = 400 // chars of streamed output kept for the periodicity check
