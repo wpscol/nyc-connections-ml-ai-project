@@ -90,6 +90,38 @@ func (c *Client) Model() string {
 	return c.resolvedModel // may be empty before first Embed call
 }
 
+// BaseURL returns the configured LLM server root (no /v1 suffix).
+func (c *Client) BaseURL() string { return c.baseURL }
+
+// ListModels queries GET /v1/models and returns the loaded model IDs.
+// Used by the health check to confirm the LLM server is reachable.
+func (c *Client) ListModels(ctx context.Context) ([]string, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/v1/models", nil)
+	if err != nil {
+		return nil, err
+	}
+	if c.apiKey != "" {
+		req.Header.Set("Authorization", "Bearer "+c.apiKey)
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("models API returned HTTP %d", resp.StatusCode)
+	}
+	var result modelsResponse
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, err
+	}
+	ids := make([]string, 0, len(result.Data))
+	for _, m := range result.Data {
+		ids = append(ids, m.ID)
+	}
+	return ids, nil
+}
+
 type embedRequest struct {
 	Input []string `json:"input"`
 	Model string   `json:"model"`

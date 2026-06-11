@@ -1,0 +1,94 @@
+[
+  {
+    "id": 1,
+    "date": "WP-01",
+    "answers": [
+      {
+        "level": 0,
+        "group": "MASS TRANSPORT",
+        "members": [
+          "CAR",
+          "TRAIN",
+          "BUS",
+          "PLANE"
+        ]
+      },
+      {
+        "level": 1,
+        "group": "FPS GAME FRANCHAISES",
+        "members": [
+          "DOOM",
+          "CRYSIS",
+          "BATTLEFIELD",
+          "METRO"
+        ]
+      },
+      {
+        "level": 2,
+        "group": "ELECTRONIC COMPONENTS",
+        "members": [
+          "TRANSISTOR",
+          "SWITCH",
+          "BREADBOARD",
+          "DIODE"
+        ]
+      },
+      {
+        "level": 3,
+        "group": "___ PLANT",
+        "members": [
+          "SNAKE",
+          "HOUSE",
+          "ASSEMBLY",
+          "POWER"
+        ]
+      }
+    ]
+  },
+  {
+    "id": 2,
+    "date": "WP-02",
+    "answers": [
+      {
+        "level": 0,
+        "group": "WORKSHOP TOOL NAMES",
+        "members": [
+          "MALLET",
+          "FILE",
+          "CHISEL",
+          "CLAMP"
+        ]
+      },
+      {
+        "level": 1,
+        "group": "BOOK TITLES",
+        "members": [
+          "DRACULA",
+          "HAMLET",
+          "UTOPIA",
+          "HOLLY"
+        ]
+      },
+      {
+        "level": 2,
+        "group": "__ BATTERY",
+        "members": [
+          "COIN",
+          "WATCH",
+          "CELL",
+          "ALKALINE"
+        ]
+      },
+      {
+        "level": 3,
+        "group": "SEA CREATURES",
+        "members": [
+          "SPONGE",
+          "CRAB",
+          "SQUID",
+          "SEAL"
+        ]
+      }
+    ]
+  }
+]

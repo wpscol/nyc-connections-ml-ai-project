@@ -1,11 +1,13 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
 	"strconv"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 
@@ -43,11 +45,40 @@ func main() {
 	r.Mount("/", srv.Router())
 	r.Mount("/mcp", mcpHandler)
 	r.Get("/api/memories", memoriesHandler(memStore))
+	r.Get("/api/health", healthHandler(embedClient))
 
 	log.Printf("server listening on :%s", cfg.Port)
 	log.Printf("MCP SSE endpoint: %s/mcp/sse", baseURL)
 	if err := http.ListenAndServe(":"+cfg.Port, r); err != nil {
 		log.Fatal(err)
+	}
+}
+
+// healthHandler reports backend liveness plus whether the LM Studio / LLM
+// server is reachable and which models it has loaded. Use it to confirm the
+// LLM integration (solver + suggest_groups) is wired up correctly.
+func healthHandler(embed *embeddings.Client) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
+		defer cancel()
+
+		llm := map[string]interface{}{
+			"base_url":  embed.BaseURL(),
+			"reachable": false,
+		}
+		if models, err := embed.ListModels(ctx); err != nil {
+			llm["error"] = err.Error()
+		} else {
+			llm["reachable"] = true
+			llm["models"] = models
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"status": "ok", // backend is up if this responds
+			"llm":    llm,
+		})
 	}
 }
 
