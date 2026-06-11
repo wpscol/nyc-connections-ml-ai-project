@@ -124,26 +124,59 @@ Rules:
 - `date` is the display name shown in the session list — any string works.
 - Use `id` values ≥ 9000 to avoid clashing with the GitHub archive (IDs 1–500).
 
-**2. Delete the existing database and reseed:**
+**2. Set `DATA_URL` in `backend/.env.local` and reseed:**
+
+```ini
+# backend/.env.local
+DATA_URL=../assets/custom_games.json
+```
 
 ```bash
 rm backend/connections.db backend/connections.db-wal backend/connections.db-shm 2>/dev/null; true
-cd backend && DATA_URL=../assets/custom_games.json go run ./cmd/server
+cd backend && go run ./cmd/server
 ```
 
 The server seeds on first boot and then runs normally. `DATA_URL` accepts an `https://` URL or any local file path (relative or absolute).
 
-## Environment variables
+## Configuration
+
+Settings are read from two files in `backend/`, then overridden by real environment variables:
+
+| File | Tracked | Purpose |
+|---|---|---|
+| `backend/.env.default` | yes | baseline defaults — edit to change project-wide defaults |
+| `backend/.env.local` | no (git-ignored) | personal overrides — safe for local paths and secrets |
+
+Create `backend/.env.local` with only the values you want to change:
+
+```ini
+# example backend/.env.local
+DATA_URL=../assets/custom_games.json
+WATCHDOG_TIMEOUT=5m
+PROMPT_DIR=../PROMPT/TIMID
+```
+
+### Variables
+
+**Server**
 
 | Variable | Default | |
 |---|---|---|
 | `PORT` | `8080` | HTTP port |
 | `DB_PATH` | `./connections.db` | SQLite file |
 | `MAX_MISTAKES` | `4` | mistakes per game (1–10) |
-| `DATA_URL` | GitHub raw JSON | puzzle source |
+| `DATA_URL` | GitHub raw JSON | puzzle source (URL or local path) |
 | `EMBED_URL` | `http://localhost:1234` | LM Studio base URL (for `suggest_groups`) |
 | `EMBED_MODEL` | *(auto-discover)* | embedding model name |
 | `EMBED_KEY` | *(empty)* | API key — optional for local servers |
+
+**Solver (`cmd/solve`)**
+
+| Variable | Default | |
+|---|---|---|
+| `PROMPT_DIR` | `../PROMPT` | directory with the 9 stage prompt files |
+| `WATCHDOG_TIMEOUT` | `3m` | max time per model call before interrupt (Go duration: `90s`, `5m`, …) |
+| `WATCHDOG_TOKENS` | `2000` | approximate token budget per call before interrupt |
 
 ## MCP server
 
