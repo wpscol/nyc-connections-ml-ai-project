@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
+	"strings"
 
 	appdb "connections/internal/db"
 	"connections/internal/game"
@@ -24,6 +26,22 @@ type rawAnswer struct {
 	Members []string `json:"members"`
 }
 
+// fetchData reads puzzle JSON from a URL (http/https) or a local file path.
+// A "file://" prefix is stripped; anything else without a recognized scheme
+// is treated as a plain filesystem path.
+func fetchData(source string) ([]byte, error) {
+	if strings.HasPrefix(source, "http://") || strings.HasPrefix(source, "https://") {
+		resp, err := http.Get(source)
+		if err != nil {
+			return nil, err
+		}
+		defer resp.Body.Close()
+		return io.ReadAll(resp.Body)
+	}
+	path := strings.TrimPrefix(source, "file://")
+	return os.ReadFile(path)
+}
+
 // SeedIfEmpty fetches puzzles from dataURL and inserts them if DB is empty.
 func SeedIfEmpty(db *sql.DB, dataURL string, defaultMaxMistakes int) error {
 	var count int
@@ -32,14 +50,9 @@ func SeedIfEmpty(db *sql.DB, dataURL string, defaultMaxMistakes int) error {
 		return nil
 	}
 
-	resp, err := http.Get(dataURL)
+	body, err := fetchData(dataURL)
 	if err != nil {
 		return fmt.Errorf("fetch data: %w", err)
-	}
-	defer resp.Body.Close()
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return fmt.Errorf("read body: %w", err)
 	}
 
 	var rawPuzzles []rawPuzzle

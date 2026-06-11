@@ -29,6 +29,8 @@ import (
 	mcpclient "github.com/mark3labs/mcp-go/client"
 	"github.com/mark3labs/mcp-go/mcp"
 	openai "github.com/sashabaranov/go-openai"
+
+	"connections/internal/config"
 )
 
 const (
@@ -37,9 +39,7 @@ const (
 	reminderEvery = 30 // rules reminder (generic)
 	progressEvery = 8  // game-state context injection (specific)
 
-	watchdogTimeout    = 3 * time.Minute
-	watchdogTokenLimit = 2_000 // approximate content tokens before interrupt
-	maxOverthinks      = 3     // consecutive watchdog triggers before aborting a game
+	maxOverthinks = 3 // consecutive watchdog triggers before aborting a game
 
 	repeatTailLen   = 400 // chars of streamed output kept for the periodicity check
 	repeatWindow    = 160 // tail length that must be strictly periodic to trip
@@ -60,7 +60,7 @@ type watchdog struct {
 	reason string
 }
 
-func newWatchdog(parent context.Context) *watchdog {
+func newWatchdog(parent context.Context, timeout time.Duration, tokenLimit int) *watchdog {
 	ctx, cancel := context.WithCancel(parent)
 	w := &watchdog{
 		ctx:    ctx,
@@ -69,19 +69,19 @@ func newWatchdog(parent context.Context) *watchdog {
 	}
 	go func() {
 		defer cancel()
-		timer := time.NewTimer(watchdogTimeout)
+		timer := time.NewTimer(timeout)
 		defer timer.Stop()
 		total := 0
 		for {
 			select {
 			case n := <-w.tokens:
 				total += n
-				if total >= watchdogTokenLimit {
+				if total >= tokenLimit {
 					w.setFired(fmt.Sprintf("token budget exceeded (~%d tokens)", total))
 					return
 				}
 			case <-timer.C:
-				w.setFired(fmt.Sprintf("no response in %.0fs", watchdogTimeout.Seconds()))
+				w.setFired(fmt.Sprintf("no response in %.0fs", timeout.Seconds()))
 				return
 			case <-parent.Done():
 				return // outer context canceled — not our fault
@@ -337,20 +337,25 @@ func (s *sessionStats) print() {
 // ── main ──────────────────────────────────────────────────────────────────────
 
 func main() {
+	cfg := config.Load()
+
 	baseURL := flag.String("base-url", "http://localhost:1234/v1", "OpenAI-compatible API base URL")
 	model := flag.String("model", "", "Model name (default: auto-detect from /v1/models)")
 	rounds := flag.Int("rounds", 0, "Games to play (0 = infinite)")
-	promptDir := flag.String("prompt-dir", "../PROMPT", "Directory containing stage prompt files")
+	promptDir := flag.String("prompt-dir", cfg.PromptDir, "Directory containing stage prompt files")
 	csvPath := flag.String("csv", "../output/results.csv", "CSV file for game results (empty = disabled)")
 	maxTokens := flag.Int("max-tokens", 0, "Max tokens per response (0 = unlimited)")
 	useTUI := flag.Bool("tui", false, "Split-pane TUI with live reasoning stream")
 	flag.Parse()
 
+	wdTimeout := cfg.WatchdogTimeout
+	wdTokenLimit := cfg.WatchdogTokenLimit
+
 	ctx := context.Background()
 
-	cfg := openai.DefaultConfig("lm-studio")
-	cfg.BaseURL = *baseURL
-	ai := openai.NewClientWithConfig(cfg)
+	aiCfg := openai.DefaultConfig("lm-studio")
+	aiCfg.BaseURL = *baseURL
+	ai := openai.NewClientWithConfig(aiCfg)
 
 	resolvedModel, err := resolveModel(ctx, ai, *model)
 	if err != nil {
@@ -424,7 +429,7 @@ func main() {
 				log.Printf("game %d starting", gameNum)
 			}
 
-			result, err := runGame(ctx, ai, mc, resolvedModel, prompts, tools, *maxTokens, sender)
+			result, err := runGame(ctx, ai, mc, resolvedModel, prompts, tools, *maxTokens, wdTimeout, wdTokenLimit, sender)
 			if err != nil {
 				log.Printf("game %d error: %v", gameNum, err)
 				result = gameResult{GameNum: gameNum, Status: "error", At: time.Now()}
@@ -502,6 +507,8 @@ func runGame(
 	prompts stagePrompts,
 	tools []openai.Tool,
 	maxTokens int,
+	wdTimeout time.Duration,
+	wdTokenLimit int,
 	sender *tuiSender,
 ) (gameResult, error) {
 	result := gameResult{At: time.Now()}
@@ -581,7 +588,7 @@ func runGame(
 			req.MaxTokens = maxTokens
 		}
 
-		wd := newWatchdog(ctx)
+		wd := newWatchdog(ctx, wdTimeout, wdTokenLimit)
 		msg, err := complete(ctx, ai, req, sender, wd)
 		fired, wdReason := wd.stop()
 

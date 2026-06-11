@@ -128,10 +128,10 @@ Rules:
 
 ```bash
 rm backend/connections.db backend/connections.db-wal backend/connections.db-shm 2>/dev/null; true
-cd backend && DATA_URL=/absolute/path/to/my-puzzles.json go run ./cmd/server
+cd backend && DATA_URL=../assets/custom_games.json go run ./cmd/server
 ```
 
-The server seeds on first boot and then runs normally. `DATA_URL` can be a `file://` path or an `https://` URL.
+The server seeds on first boot and then runs normally. `DATA_URL` accepts an `https://` URL or any local file path (relative or absolute).
 
 ## Environment variables
 
