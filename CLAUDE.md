@@ -31,16 +31,18 @@ Reference for this repo. Read before working. NYT Connections clone + MCP server
 .
 ├── .mcp.json                  # MCP client config → http://localhost:8080/mcp/sse
 ├── .mise.toml                 # go + node versions
-├── PROMPT/                    # AI-solver stage prompts (one file per game event)
-│   ├── system.md              #   system message: invariants + tool list
-│   ├── session_start.md       #   game start: list_sessions → memory_list → get_state
-│   ├── analysis.md            #   before each guess: reason, suggest_groups, pre-flight check
+├── PROMPT/                    # AI-solver prompt set (point at it with -prompt-dir); 11 .md files (ALL required — solver crashes if any is missing/empty)
+│   ├── system.md              #   system message: rules + invariants + tool list + <context>-block framing
+│   ├── session_start.md       #   FIRST game of the run: list_sessions → memory_list → get_state
+│   ├── session_continue.md    #   every later game: resume framing (don't treat a mid-run resume as new)
+│   ├── analysis.md            #   before each guess: rank candidates, suggest_groups, pre-flight check
 │   ├── result_correct.md      #   after correct guess: save memory, next step
 │   ├── result_one_away.md     #   after one_away: swap logic, lock 3 correct words
 │   ├── result_wrong.md        #   after wrong guess: reconsideration strategy
 │   ├── game_won.md            #   after win: save lessons, delete solved_N, next_game
 │   ├── game_lost.md           #   after loss: save solved groups, restart_game
-│   └── restart.md             #   after restart: replay solved_N instantly, then analyse
+│   ├── restart.md             #   after restart: replay solved_N instantly, then analyse
+│   └── watchdog.md            #   overthinking/token-limit interrupt: forces a guess; placeholders {reason}, {context}
 ├── README.md                  # user docs
 ├── output/                    # gitignored; CSV results from cmd/solve
 ├── backend/
@@ -48,7 +50,16 @@ Reference for this repo. Read before working. NYT Connections clone + MCP server
 │   ├── .air.toml              # `air` live-reload → builds cmd/server to tmp/main
 │   ├── cmd/
 │   │   ├── server/main.go     # entrypoint: wires config→db→fetcher→hub→server→mcp, mounts chi
-│   │   ├── solve/main.go      # standalone solver agent: infinite game loop via MCP + OpenAI API
+│   │   ├── solve/            # standalone solver agent: infinite game loop via MCP + OpenAI API
+│   │   │   ├── main.go       #   flags, setup, the outer game loop + TUI wiring
+│   │   │   ├── runner.go     #   runGame: the per-turn stage machine (sole context-injection point)
+│   │   │   ├── prompts.go    #   Stage enum + stageRegistry + loadPrompts (single source of truth)
+│   │   │   ├── gamectx.go    #   gameCtx: facts + thinking buffer → <context> block builder
+│   │   │   ├── completion.go #   complete(): streaming/non-streaming call, captures reasoning
+│   │   │   ├── tools.go      #   callTool, convertTools, resolveModel, log helpers
+│   │   │   ├── watchdog.go   #   per-call token/time watchdog + repetition guard
+│   │   │   ├── stats.go      #   gameResult, sessionStats
+│   │   │   └── tui.go        #   bubbletea split-pane TUI
 │   │   └── mcpdemo/main.go    # e2e helper: solves WS-active session by reading answers from DB
 │   └── internal/
 │       ├── config/config.go   # env vars → Config struct
@@ -96,7 +107,7 @@ Reference for this repo. Read before working. NYT Connections clone + MCP server
 
 **`GameState` fields** (stored as JSON blob in `sessions.state`):
 - `puzzle_id`, `mistakes_left`, `max_mistakes`, `solved`, `remaining_words`, `status`, `guesses` — current-game data.
-- `prior_guesses []GuessAttempt` — guess history carried over from previous restarts of the **same** puzzle. Wiped when navigating to a new puzzle (`next`/`prev`). Both `guesses` and `prior_guesses` are merged by `GetGuesses()` and surfaced in `get_tried_combinations` so the model sees full history across restarts.
+- `prior_guesses []GuessAttempt` — guess history carried over from previous restarts of the **same** puzzle. Wiped when navigating to a new puzzle (`next`/`prev`). Both `guesses` and `prior_guesses` are merged by `GetGuesses()` and surfaced in `get_state`/`get_board` (and the REST `/guesses` endpoint) so the model sees full history across restarts.
 
 **Difficulty → color**: `0 yellow, 1 green, 2 blue, 3 purple`. Maps live in `types/game.ts` (`DIFFICULTY_COLORS`, `DIFFICULTY_HEX`).
 
@@ -164,13 +175,11 @@ SSE at `http://localhost:8080/mcp/sse`. `Build(srv, hub, baseURL, embedClient) (
 |---|---|
 | `list_sessions` | list existing sessions; join `ws_active=true` preferred |
 | `get_state` | full state + tried_combinations; fires `state_sync` WS event |
-| `get_board` | lightweight board view (no mistakes/status) |
-| `get_tried_combinations` | full guess history across all restarts; order-independent |
+| `get_board` | lightweight board view (no mistakes/status); includes `tried_combinations` |
 | `submit_guess` | 4 comma-separated UPPERCASED words; broadcasts `guess_result` + completion |
 | `restart_game` | reset same puzzle; carries prior_guesses forward |
 | `next_game` | advance to next puzzle (call only after winning) |
 | `prev_game` | go back to previous puzzle |
-| `set_max_mistakes` | change mistake limit for future sessions (1–10) |
 | `suggest_groups` | semantic K-means++ clustering of remaining words |
 | `memory_note` | write/overwrite a key→content note in `MemoryStore` |
 | `memory_list` | read all notes |
@@ -191,27 +200,30 @@ go run ./cmd/solve -model gemma-4                # explicit model name
 go run ./cmd/solve -base-url http://host:1234/v1
 go run ./cmd/solve -max-tokens 2048              # cap tokens per response
 go run ./cmd/solve -csv ../output/my.csv         # custom CSV path (default: ../output/results.csv)
-go run ./cmd/solve -prompt-dir ../PROMPT         # custom stage prompt directory
+go run ./cmd/solve -prompt-dir ../PROMPT             # choose a prompt set (default: cfg.PromptDir)
 ```
 
-**Stage-based prompt injection** — instead of one monolithic system prompt, `PROMPT/` holds 9 focused files. `runGame()` queues the matching file as a user message whenever a relevant event fires:
+**Stage-driven prompt injection** — the solver injects exactly ONE focused prompt per relevant game event, and **nothing else is ever injected** (no periodic reminders, no progress snapshots). Each prompt lives in the prompt directory as a `.md` file (11 total). `loadPrompts(dir)` ([prompts.go](backend/cmd/solve/prompts.go)) reads them at startup, **before any network connection**, and `log.Fatalf`s if any file is missing or empty — there are no hardcoded prompt strings. `stageRegistry` is the single source of truth mapping each `Stage` → `{file, priority}`; to add a stage you add an enum constant, a registry row, and a `.md` file. `runGame()` ([runner.go](backend/cmd/solve/runner.go)) sets a pending stage whenever an event fires and injects it on the next turn:
 
-| Trigger | File injected |
-|---|---|
-| Game start | `session_start.md` (first user message) |
-| `get_tried_combinations` called | `analysis.md` |
-| `submit_guess` → correct, still playing | `result_correct.md` |
-| `submit_guess` → one_away | `result_one_away.md` |
-| `submit_guess` → wrong | `result_wrong.md` |
-| `submit_guess` → status=won | `game_won.md` |
-| `submit_guess` → status=lost | `game_lost.md` |
-| `restart_game` called | `restart.md` |
+| Trigger | Stage / file injected | Priority |
+|---|---|---|
+| First game of the run | `session_start.md` | bootstrap (4) |
+| Every later game (resume) | `session_continue.md` (avoids "new game" framing on a mid-run resume) | bootstrap (4) |
+| `get_state` / `get_board` called | `analysis.md` | analysis (1) |
+| `submit_guess` → correct, still playing | `result_correct.md` | result (3) |
+| `submit_guess` → one_away | `result_one_away.md` | result (3) |
+| `submit_guess` → wrong | `result_wrong.md` | result (3) |
+| `submit_guess` → status=won | `game_won.md` | result (3) |
+| `submit_guess` → status=lost | `game_lost.md` | result (3) |
+| `restart_game` called | `restart.md` | restart (2) |
 
-Multiple events in the same turn use priority: result (3) > restart (2) > analysis (1). Higher-priority stage overwrites lower. Terminal stages (`won`/`lost`) are injected immediately before `runGame` returns.
+When several events fire in one turn the higher priority wins (bootstrap > result > restart > analysis). `system.md` is the system message (loaded once, not a stage). `watchdog.md` is a non-stage **interrupt** fired when the watchdog cancels an overthinking call — it `{reason}`/`{context}` placeholders are filled via `strings.NewReplacer`, with `{context}` = `gctx.factsSummary()` (the thinking-free state snapshot, so the interrupt doesn't replay the very reasoning that caused the overthink).
+
+**The `<context>` block** — every injected stage prompt is prefixed with a `<context>…</context>` reference block built by `gameCtx.contextBlock()` ([gamectx.go](backend/cmd/solve/gamectx.go)). It is the ONLY context the model gets beyond the stage prompt itself, and contains: the current **session id**, **mistakes left**, the game's **guesses so far** (solved ✓ / one-away ~ / wrong ✗), **words remaining**, the **memory keys present** (so the model can `memory_list` to read contents on demand), and the **last ~5000 words of the model's own thinking** (`reasoning_content` + content — the chat history deliberately drops `reasoning_content`, so this rolling buffer is the only place it survives across turns). The block is framed as reference material, not a new instruction. `gameCtx.update()` folds every tool result into this state; `reset()` (on `restart_game`) clears board guesses but preserves thinking, memory keys, and session id.
+
+**Only a win ends `runGame`**: `game_won.md` is injected and the function returns so the outer loop advances to the next puzzle. A **loss is non-terminal** — `game_lost.md` is injected and the loop continues so the model saves memory and calls `restart_game`, replaying the same puzzle in-place until it is solved (or `maxTurns`/watchdog limits abort).
 
 **Other key behaviours:**
-- `system.md` is the system message: invariants only, no per-stage guidance.
-- `contextReminder` (injected every 30 turns) is now minimal — a safety net, not the primary instruction source.
 - `resolveModel()` skips models with "embed" or "rerank" in the name.
 - Wipes `MemoryStore` via `memory_clear` before the model sees anything.
 - `noToolStreak` detector: nudge after 1 no-tool turn, abort after 3.
@@ -264,5 +276,5 @@ Live reload backend: `air` (uses `.air.toml`).
 - Session `state` and puzzle `data` are JSON blobs in SQLite — schema changes to `GameState`/`Puzzle` are backward-incompatible with existing rows; delete `connections.db*` to reseed.
 - `db.SetMaxOpenConns(1)` — SQLite single-writer; keep queries cheap.
 - TS types in `types/game.ts` mirror Go JSON tags (snake_case). Keep them in sync when changing payloads.
-- `set_max_mistakes` only affects NEW sessions; running sessions keep their count.
+- Max mistakes is set via the REST endpoint `PUT /api/config/max_mistakes` (browser only) and only affects NEW sessions; running sessions keep their count. There is no MCP tool for it — the solver cannot change the mistake limit.
 - Solved groups are deduped by `title` on the client and skipped by `difficulty` on the server.

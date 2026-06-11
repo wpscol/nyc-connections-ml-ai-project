@@ -43,7 +43,9 @@ func fetchData(source string) ([]byte, error) {
 }
 
 // SeedIfEmpty fetches puzzles from dataURL and inserts them if DB is empty.
-func SeedIfEmpty(db *sql.DB, dataURL string, defaultMaxMistakes int) error {
+// It does NOT manage the max_mistakes config — that is a boot-time default
+// applied by the server on every start (see cmd/server/main.go).
+func SeedIfEmpty(db *sql.DB, dataURL string) error {
 	var count int
 	db.QueryRow(`SELECT COUNT(*) FROM puzzles`).Scan(&count)
 	if count > 0 {
@@ -106,9 +108,6 @@ func SeedIfEmpty(db *sql.DB, dataURL string, defaultMaxMistakes int) error {
 		if err := appdb.SetConfig(db, "current_puzzle_id", fmt.Sprintf("%d", rawPuzzles[0].ID)); err != nil {
 			return err
 		}
-	}
-	if err := appdb.SetConfig(db, "max_mistakes", fmt.Sprintf("%d", defaultMaxMistakes)); err != nil {
-		return err
 	}
 	fmt.Printf("Seeded %d puzzles\n", len(rawPuzzles))
 	return nil

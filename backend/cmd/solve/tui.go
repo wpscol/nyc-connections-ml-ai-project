@@ -252,13 +252,13 @@ func (m tuiModel) View() string {
 	logLines := m.logDisplayLines()
 	logWin, logOff := windowLines(logLines, iH, m.logScroll)
 	logHeader := styleHeader.Render("Game Log") + scrollTag(logOff, len(logLines), iH)
-	logContent := logHeader + "\n" + strings.Join(logWin, "\n")
+	logContent := clipLines(logHeader+"\n"+strings.Join(logWin, "\n"), lIW)
 	leftBorder := colorLogBorder
 	if m.focus == 0 {
 		leftBorder = colorFocusBorder
 	}
 	leftPane := lipgloss.NewStyle().
-		Width(lIW).Height(paneH-2).
+		Width(lIW+2).Height(paneH-2). // +2: lipgloss Width includes the 2 padding cols, so the text area is Width-2=lIW (the wrap width). Without it lines re-wrap and push the bottom border off-screen.
 		MaxWidth(lIW+4).MaxHeight(paneH). // hard clip: never exceed pane bounds
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(leftBorder).
@@ -280,23 +280,23 @@ func (m tuiModel) View() string {
 	} else {
 		win, off := windowLines(wrapped, iH, m.thinkScroll)
 		thinkOff = off
-		// truncate each line to the pane width so lipgloss never re-wraps it into
-		// an extra row — that overflow is what corrupts the screen layout.
-		truncR := lipgloss.NewStyle().MaxWidth(rIW)
 		styled := make([]string, len(win))
 		for i, l := range win {
-			styled[i] = sty.Render(truncR.Render(l))
+			styled[i] = sty.Render(l)
 		}
 		thinkBody = strings.Join(styled, "\n")
 	}
 	thinkHeader := styleHeader.Render(title) + scrollTag(thinkOff, len(wrapped), iH)
-	thinkContent := thinkHeader + "\n" + thinkBody
+	// clipLines truncates every row (header, body, placeholder) to the pane text
+	// width so lipgloss never re-wraps a too-long line into an extra row — that
+	// overflow grows the pane until MaxHeight clips its bottom border off-screen.
+	thinkContent := clipLines(thinkHeader+"\n"+thinkBody, rIW)
 	rightBorder := colorThinkBorder
 	if m.focus == 1 {
 		rightBorder = colorFocusBorder
 	}
 	rightPane := lipgloss.NewStyle().
-		Width(rIW).Height(paneH-2).
+		Width(rIW+2).Height(paneH-2). // +2: see leftPane — text area = Width-2 = rIW (the wrap/truncate width).
 		MaxWidth(rIW+4).MaxHeight(paneH). // hard clip: never exceed pane bounds
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(rightBorder).
@@ -304,10 +304,27 @@ func (m tuiModel) View() string {
 		Render(thinkContent)
 
 	// ── status bar ──────────────────────────────────────────────────────────
+	// Must stay exactly one row tall: a wrapped status bar would push the panes'
+	// bottom border below the visible terminal area. Truncate to the inner width
+	// (total minus the 2 padding cols) so lipgloss never re-wraps it.
 	help := "tab focus · ↑↓/jk scroll · pgup/pgdn · g/G top/live · q quit"
-	bar := styleStatus.Width(m.w - 2).Render(m.statusText + "  · " + help)
+	statusLine := lipgloss.NewStyle().MaxWidth(max(1, m.w-2)).Render(m.statusText + "  · " + help)
+	bar := styleStatus.Width(m.w - 2).MaxHeight(1).Render(statusLine)
 
 	return lipgloss.JoinHorizontal(lipgloss.Top, leftPane, rightPane) + "\n" + bar
+}
+
+// clipLines truncates each line of s to width w (ANSI-aware) so no row exceeds
+// the pane's text area. A row wider than the pane makes lipgloss wrap it into an
+// extra line, growing the pane past its Height until MaxHeight clips the bottom
+// border. Headers, the "(waiting…)" placeholder and wrapped body all pass here.
+func clipLines(s string, w int) string {
+	clip := lipgloss.NewStyle().MaxWidth(w)
+	lines := strings.Split(s, "\n")
+	for i, l := range lines {
+		lines[i] = clip.Render(l)
+	}
+	return strings.Join(lines, "\n")
 }
 
 // windowLines returns the visible slice of lines for height h at scroll offset

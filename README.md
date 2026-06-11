@@ -95,7 +95,7 @@ cd backend && go run ./cmd/solve        # plain logs
 cd backend && go run ./cmd/solve -tui   # split-pane TUI: live reasoning + game log
 ```
 
-Open the browser to watch every move animate in real time. Flags: `-rounds N`, `-model NAME`, `-base-url URL`, `-max-tokens N`.
+Open the browser to watch every move animate in real time. Flags: `-rounds N` (stop after N games), `-wins N` (stop after N wins), `-model NAME`, `-base-url URL`, `-max-tokens N`.
 
 ## Custom puzzles
 
@@ -225,13 +225,15 @@ See [CLAUDE.md](CLAUDE.md) for architecture, the full REST/WebSocket/MCP surface
 
 - **Agentic workload as a standalone Go binary** — `cmd/solve` runs an infinite MCP+LLM loop outside the game server. OpenAI-compatible client speaks to LM Studio at `localhost:1234`. Outputs per-game CSV rows (status, mistakes, turns, session ID) for tracking win rate over time.
 
-- **Stage-based prompt injection** — Instead of one monolithic system prompt, 9 focused files in `PROMPT/` are injected as fresh user messages at the exact moment they are relevant: `session_start.md` on boot, `analysis.md` after `get_tried_combinations`, `result_wrong.md` after a bad guess, etc. The system prompt stays minimal (invariants only); per-event guidance stays focused.
+- **Stage-based prompt injection** — Instead of one monolithic system prompt, **every** prompt the solver injects is a focused `.md` file in the prompt directory (12 total: `system.md`, `session_start.md`, `session_continue.md`, `analysis.md`, `result_correct/one_away/wrong.md`, `game_won/lost.md`, `restart.md`, `context_reminder.md`, `watchdog.md`). They are injected as fresh user messages at the exact moment they are relevant: `session_start.md` boots the **first** game of the run while `session_continue.md` resumes every later game (so the model doesn't treat a mid-run resume as a brand-new game), `analysis.md` after `get_state`/`get_board`, `result_wrong.md` after a bad guess, etc. There are **no hardcoded prompt strings in the binary** — all prompts are loaded from the directory at startup, and the solver **crashes immediately if any prompt file is missing or empty** (so an incomplete prompt set can never silently degrade behaviour). Point at a set with `-prompt-dir <dir>` (default `../PROMPT`).
 
-- **Injection priority system** — When multiple events fire in one turn, a priority ladder resolves which stage wins: `priAnalysis=1 < priRestart=2 < priResult=3`. Terminal stages (`won`/`lost`) are injected immediately before `runGame` returns.
+- **Injection priority system** — When multiple events fire in one turn, a priority ladder resolves which stage wins: `priAnalysis=1 < priRestart=2 < priResult=3`. Only a **win** ends a game (injects `game_won.md`, then returns to advance to the next puzzle); a **loss is non-terminal** — `game_lost.md` is injected and the loop keeps running so the model restarts and replays the same puzzle until it wins.
 
 - **gameCtx progress tracker** — Per-game struct accumulates solved/one_away/wrong guesses and mistake counts. Injected as a compact structured summary after every `submit_guess` and every 8 turns. Prevents the model from hallucinating already-tried combinations. Cleared on restart; fully wiped on `next_game`.
 
-- **Periodic rules reminder** — Every 30 turns a compact rules reminder is injected as a recovery nudge for long games where context compresses. Not the primary instruction mechanism.
+- **Periodic rules reminder** — Every `reminderEvery` turns the `context_reminder.md` prompt (with its `{turn}` placeholder filled in) is injected as a recovery nudge for long games where context compresses. Not the primary instruction mechanism.
+
+- **Overthinking watchdog** — If the model reasons too long without acting (wall-clock or token-budget limit), the `watchdog.md` prompt is injected — filled with `{reason}` and the live game-state `{context}`. It **requires** the model to submit a guess that turn rather than merely encouraging one. Three consecutive watchdog triggers abort the game as stuck.
 
 - **Tool-choice mode switching** — `"required"` in plain log mode forces a tool call every turn (prevents reasoning walls with no action). `"auto"` in TUI mode lets the model emit reasoning before picking a tool, which fills the thinking pane.
 

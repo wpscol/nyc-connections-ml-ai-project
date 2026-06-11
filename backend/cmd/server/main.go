@@ -28,9 +28,18 @@ func main() {
 	}
 	defer db.Close()
 
-	if err := fetcher.SeedIfEmpty(db, cfg.DataURL, cfg.MaxMistakes); err != nil {
+	if err := fetcher.SeedIfEmpty(db, cfg.DataURL); err != nil {
 		log.Printf("warning: seed failed: %v", err)
 	}
+
+	// MAX_MISTAKES is a boot-time default — apply it on every start so changing
+	// the env value takes effect even when the DB is already seeded (SeedIfEmpty
+	// only runs once, on an empty DB). Runtime changes via the browser
+	// (PUT /api/config/max_mistakes) persist only until the next restart.
+	if err := appdb.SetConfig(db, "max_mistakes", strconv.Itoa(cfg.MaxMistakes)); err != nil {
+		log.Printf("warning: set max_mistakes: %v", err)
+	}
+	log.Printf("max mistakes per game: %d", cfg.MaxMistakes)
 
 	hub := api.NewHub()
 	srv := api.NewServer(db, hub)
