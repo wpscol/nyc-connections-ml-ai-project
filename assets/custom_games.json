@@ -106,7 +106,7 @@
     "date": "jarek_2",
     "answers": [
       {"level": 0, "group": "track vehicles", "members": ["Train","underground","metro","tram"]},
-      {"level": 1, "group": "FOOD CONTAINERS",        "members": ["soprano","alto","tenor","bass"]},
+      {"level": 1, "group": "human voice",        "members": ["soprano","alto","tenor","bass"]},
       {"level": 2, "group": "pc terms",           "members": ["MB","PSU","CPU","GPU"]},
       {"level": 3, "group": "file sizes",       "members": ["GB","KB","B","TB"]}
     ]
@@ -119,6 +119,16 @@
       {"level": 1, "group": "consonant",        "members": ["b","d","r","g"]},
       {"level": 2, "group": "clasical game movement",           "members": ["w","s","a","d"]},
       {"level": 3, "group": "name for ai model",       "members": ["q","w","e","n"]}
+    ]
+  },  
+  {
+    "id": 6972,
+    "date": "jarek_4",
+    "answers": [
+      {"level": 0, "group": "noble metals", "members": ["silver","gold","platinum","pallad"]},
+      {"level": 1, "group": "game lounchers",        "members": ["steam","gog","epic","origin"]},
+      {"level": 2, "group": "aaa games",           "members": ["doom","gta","prey","sekiro"]},
+      {"level": 3, "group": "names of ai models",       "members": ["qwen","gemini","haiku","gpt"]}
     ]
   },
   {
