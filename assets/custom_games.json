@@ -92,6 +92,36 @@
     ]
   },
   {
+    "id": 6969,
+    "date": "jarek_1",
+    "answers": [
+      {"level": 0, "group": "poker terms", "members": ["bet","quads","full","all in"]},
+      {"level": 1, "group": "lol terms","members": ["top","meta","adam","lol"]},
+      {"level": 2, "group": "fruts",           "members": ["carrot","orange","kaki","pumpkin"]},
+      {"level": 3, "group": "corporations",       "members": ["apple","google","microsoft","alphabet"]}
+    ]
+  },
+  {
+    "id": 6970,
+    "date": "jarek_2",
+    "answers": [
+      {"level": 0, "group": "track vehicles", "members": ["Train","underground","metro","tram"]},
+      {"level": 1, "group": "FOOD CONTAINERS",        "members": ["soprano","alto","tenor","bass"]},
+      {"level": 2, "group": "pc terms",           "members": ["MB","PSU","CPU","GPU"]},
+      {"level": 3, "group": "file sizes",       "members": ["GB","KB","B","TB"]}
+    ]
+  },
+  {
+    "id": 6971,
+    "date": "jarek_3",
+    "answers": [
+      {"level": 0, "group": "vowels", "members": ["o","e","u","y"]},
+      {"level": 1, "group": "consonant",        "members": ["b","d","r","g"]},
+      {"level": 2, "group": "clasical game movement",           "members": ["w","s","a","d"]},
+      {"level": 3, "group": "name for ai model",       "members": ["q","w","e","n"]}
+    ]
+  },
+  {
       "id": 2137,
     "date": "Filip 1",
     "answers": [
