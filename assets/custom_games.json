@@ -93,47 +93,47 @@
   },
   {
     "id": 6969,
-    "date": "jarek_1",
+    "date": "JAREK_1",
     "answers": [
-      {"level": 0, "group": "poker terms", "members": ["bet","quads","full","all in"]},
-      {"level": 1, "group": "lol terms","members": ["top","meta","adam","lol"]},
-      {"level": 2, "group": "fruts",           "members": ["carrot","orange","kaki","pumpkin"]},
-      {"level": 3, "group": "corporations",       "members": ["apple","google","microsoft","alphabet"]}
+      {"level": 0, "group": "POKER TERMS", "members": ["BET","QUADS","FULL","ALL IN"]},
+      {"level": 1, "group": "LOL TERMS","members": ["TOP","META","ADAM","LOL"]},
+      {"level": 2, "group": "FRUTS",           "members": ["CARROT","ORANGE","KAKI","PUMPKIN"]},
+      {"level": 3, "group": "CORPORATIONS",       "members": ["APPLE","GOOGLE","MICROSOFT","ALPHABET"]}
     ]
   },
   {
     "id": 6970,
-    "date": "jarek_2",
+    "date": "JAREK_2",
     "answers": [
-      {"level": 0, "group": "track vehicles", "members": ["Train","underground","metro","tram"]},
-      {"level": 1, "group": "human voice",        "members": ["soprano","alto","tenor","bass"]},
-      {"level": 2, "group": "pc terms",           "members": ["MB","PSU","CPU","GPU"]},
-      {"level": 3, "group": "file sizes",       "members": ["GB","KB","B","TB"]}
+      {"level": 0, "group": "TRACK VEHICLES", "members": ["TRAIN","UNDERGROUND","METRO","TRAM"]},
+      {"level": 1, "group": "HUMAN VOICE",        "members": ["SOPRANO","ALTO","TENOR","BASS"]},
+      {"level": 2, "group": "PC TERMS",           "members": ["MB","PSU","CPU","GPU"]},
+      {"level": 3, "group": "FILE SIZES",       "members": ["GB","KB","B","TB"]}
     ]
   },
   {
     "id": 6971,
-    "date": "jarek_3",
+    "date": "JAREK_3",
     "answers": [
-      {"level": 0, "group": "vowels", "members": ["o","e","u","y"]},
-      {"level": 1, "group": "consonant",        "members": ["b","d","r","g"]},
-      {"level": 2, "group": "clasical game movement",           "members": ["w","s","a","d"]},
-      {"level": 3, "group": "name for ai model",       "members": ["q","w","e","n"]}
+      {"level": 0, "group": "VOWELS", "members": ["O","E","U","Y"]},
+      {"level": 1, "group": "CONSONANT",        "members": ["B","D","R","G"]},
+      {"level": 2, "group": "CLASICAL GAME MOVEMENT",           "members": ["W","S","A","D"]},
+      {"level": 3, "group": "NAME FOR AI MODEL",       "members": ["Q","W","E","N"]}
     ]
   },  
   {
     "id": 6972,
-    "date": "jarek_4",
+    "date": "JAREK_4",
     "answers": [
-      {"level": 0, "group": "noble metals", "members": ["silver","gold","platinum","pallad"]},
-      {"level": 1, "group": "game lounchers",        "members": ["steam","gog","epic","origin"]},
-      {"level": 2, "group": "aaa games",           "members": ["doom","gta","prey","sekiro"]},
-      {"level": 3, "group": "names of ai models",       "members": ["qwen","gemini","haiku","gpt"]}
+      {"level": 0, "group": "NOBLE METALS", "members": ["SILVER","GOLD","PLATINUM","PALLAD"]},
+      {"level": 1, "group": "GAME LOUNCHERS",        "members": ["STEAM","GOG","EPIC","ORIGIN"]},
+      {"level": 2, "group": "AAA GAMES",           "members": ["DOOM","GTA","PREY","SEKIRO"]},
+      {"level": 3, "group": "NAMES OF AI MODELS",       "members": ["QWEN","GEMINI","HAIKU","GPT"]}
     ]
   },
   {
       "id": 2137,
-    "date": "Filip 1",
+    "date": "FILIP 1",
     "answers": [
       {"level": 0, "group": "CARD SUITS", "members": ["HEART","SPADE","DIAMOND","CLUB"]},
       {"level": 1, "group": "WORKS FEATURING KEANU REAVES",        "members": ["CYBERPUNK","MATRIX","CONSTANTINE","SPEED"]},
@@ -143,7 +143,7 @@
   },
   {
     "id": 2138,
-    "date": "Filip 2",
+    "date": "FILIP 2",
     "answers": [
       {"level": 0, "group": "UNDER THE GROUND", "members": ["PIPE","WIRE","FOUNDATION","BASEMENT"]},
       {"level": 1, "group": "FOOD CONTAINERS",        "members": ["BOWL","PLATE","JAR","CAN"]},
